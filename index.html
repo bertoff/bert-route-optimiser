@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Rider Route</title>
+  <meta name="description" content="Scan your tasking sheet, get the best stop order. Free.">
+  <meta name="theme-color" content="#0f766e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Rider Route">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>Rider Route</h1>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="stops" aria-selected="true">Stops <span id="stopCount" class="pill"></span></button>
+      <button role="tab" data-tab="route" aria-selected="false">Route</button>
+    </nav>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙︎</button>
+  </header>
+
+  <main>
+    <!-- STOPS -->
+    <section id="tab-stops" class="tab">
+      <div id="hubBanner" class="card hub"></div>
+
+      <div class="actions">
+        <label class="btn primary">📷 Scan sheet page
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" hidden>
+        </label>
+        <label class="btn">🖼 From photos
+          <input id="galleryInput" type="file" accept="image/*" multiple hidden>
+        </label>
+        <button id="addManualBtn" class="btn">＋ Postal code</button>
+      </div>
+      <p class="hint">Scan pages in order (page 1 first). Lay the sheet flat and fill the frame.</p>
+
+      <div id="progress" class="card progress" hidden></div>
+      <div id="stopsSummary" class="summary"></div>
+      <ol id="stopList" class="stop-list"></ol>
+
+      <div class="optimise-bar">
+        <label>Leave at <input id="departInput" type="time"></label>
+        <button id="optimiseBtn" class="btn primary big">Optimise route</button>
+      </div>
+      <button id="clearBtn" class="btn ghost danger">Clear today's run</button>
+    </section>
+
+    <!-- ROUTE -->
+    <section id="tab-route" class="tab" hidden>
+      <div id="routeEmpty" class="card">No route yet. Add stops, then tap <b>Optimise route</b>.</div>
+      <div id="routeView" hidden>
+        <div id="routeSummary" class="card summary-card"></div>
+        <div id="map"></div>
+        <button id="reoptBtn" class="btn">↻ Re-optimise remaining stops from here</button>
+        <ol id="visitList" class="visit-list"></ol>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="settingsDlg">
+    <form method="dialog" class="settings">
+      <h2>Settings</h2>
+      <label>Hub postal code (where every run starts)
+        <input id="hubInput" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="e.g. 409051">
+      </label>
+      <p id="hubResolved" class="hint"></p>
+      <label>Minutes per envelope (ID check + signature)
+        <input id="serviceInput" type="number" min="0" max="15" step="0.5">
+      </label>
+      <label>Navigation app
+        <select id="navInput">
+          <option value="google">Google Maps</option>
+          <option value="waze">Waze</option>
+          <option value="apple">Apple Maps</option>
+        </select>
+      </label>
+      <p class="hint small">Addresses: OneMap © Singapore Land Authority. Travel times: OSRM / © OpenStreetMap contributors (car roads; there is no motorbike profile, so times are slightly cautious).</p>
+      <menu><button value="cancel" class="btn ghost">Cancel</button><button id="saveSettings" value="save" class="btn primary">Save</button></menu>
+    </form>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>

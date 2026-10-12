@@ -1,0 +1,9 @@
+node_modules/
+# Never commit sheet photos: they contain customers' names, IDs and addresses.
+*.jpg
+*.jpeg
+*.heic
+*.HEIC
+sheets/
+samples/
+.claude/
