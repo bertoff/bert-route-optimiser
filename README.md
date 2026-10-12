@@ -18,9 +18,16 @@ No paid apps, no accounts, no stop limit.
    - ✗ **not a real postal code**, or **scanner skipped this row**: type it in
    - ↻ **couldn't check yet**: no signal or OneMap busy; tap *Retry address checks*
 3. **Optimise**: envelopes for the same building become one stop. The order
-   starts at your hub, ends at the last stop, and respects any time windows (⏰)
-   and priority stops (☆).
-4. **Ride**: tap **Navigate**, then **✓ Done** or **Skip**. If plans change, tap
+   starts at your hub, ends at the last stop, and respects each envelope's
+   delivery slot (**AM 9:00–1:30** or **PM 1:00–6:00**, or **Any**) and
+   priority stops (☆). Use **Set all to** for the common slot, then change the
+   few that differ.
+4. **Choose the finish**: every run starts at the hub (059764, changeable in ⚙︎).
+   **Finish at** can be *Last stop (decide later)*, *Back to hub*, or one of two
+   homes saved in ⚙︎ Settings. The order changes to suit: with a home picked,
+   the last stops lead towards it.
+5. **Ride**: tap **Navigate**, then **✓ Done** or **Skip**. Running late? Change
+   **Finish at** on the Route screen and the remaining stops re-plan. Or tap
    **↻ Re-optimise remaining stops from here**.
 
 Tips for good scans: lay the sheet flat, fill the frame, avoid shadows, and

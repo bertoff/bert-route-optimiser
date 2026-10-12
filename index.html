@@ -42,10 +42,14 @@
 
       <div id="progress" class="card progress" hidden></div>
       <div id="stopsSummary" class="summary"></div>
+      <div id="slotBar" class="slot-bar" hidden></div>
       <ol id="stopList" class="stop-list"></ol>
 
       <div class="optimise-bar">
-        <label>Leave at <input id="departInput" type="time"></label>
+        <div class="bar-fields">
+          <label>Leave at <input id="departInput" type="time"></label>
+          <label>Finish at <select id="endInput"></select></label>
+        </div>
         <button id="optimiseBtn" class="btn primary big">Optimise route</button>
       </div>
       <button id="clearBtn" class="btn ghost danger">Clear today's run</button>
@@ -57,6 +61,7 @@
       <div id="routeView" hidden>
         <div id="routeSummary" class="card summary-card"></div>
         <div id="map"></div>
+        <label class="end-pick">Finish at <select id="routeEndInput"></select></label>
         <button id="reoptBtn" class="btn">↻ Re-optimise remaining stops from here</button>
         <ol id="visitList" class="visit-list"></ol>
       </div>
@@ -70,6 +75,13 @@
         <input id="hubInput" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="e.g. 409051">
       </label>
       <p id="hubResolved" class="hint"></p>
+      <fieldset class="homes">
+        <legend>Homes (to pick as the finish on days you end early)</legend>
+        <div class="home-row"><input id="home0Name" placeholder="Name, e.g. Bedok" maxlength="20"><input id="home0Code" inputmode="numeric" maxlength="6" placeholder="Postal code"></div>
+        <p id="home0Resolved" class="hint"></p>
+        <div class="home-row"><input id="home1Name" placeholder="Name, e.g. Mum's place" maxlength="20"><input id="home1Code" inputmode="numeric" maxlength="6" placeholder="Postal code"></div>
+        <p id="home1Resolved" class="hint"></p>
+      </fieldset>
       <label>Minutes per envelope (ID check + signature)
         <input id="serviceInput" type="number" min="0" max="15" step="0.5">
       </label>

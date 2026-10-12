@@ -34,7 +34,7 @@ body {
   font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   padding-bottom: env(safe-area-inset-bottom);
 }
-main { max-width: 720px; margin: 0 auto; padding: 12px 16px 96px; }
+main { max-width: 720px; margin: 0 auto; padding: 12px 16px 170px; }
 
 .topbar {
   position: sticky; top: 0; z-index: 1000;
@@ -91,8 +91,13 @@ main { max-width: 720px; margin: 0 auto; padding: 12px 16px 96px; }
 .stop .tools { display: flex; gap: 2px; }
 .stop .tools button { border: 0; background: none; font-size: 18px; padding: 6px; color: var(--muted); }
 .stop .tools button.on { color: var(--warn); }
-.stop .window { grid-column: 2 / 4; display: flex; gap: 6px; align-items: center; font-size: 13px; }
-.stop .window input { font: inherit; padding: 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }
+.stop .slots { grid-column: 2 / 4; display: flex; flex-wrap: wrap; gap: 6px; }
+.slot-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); margin: 4px 2px 8px; }
+.chip {
+  min-height: 34px; padding: 4px 12px; border-radius: 17px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font: 600 13px system-ui, sans-serif; cursor: pointer;
+}
+.chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
 .stop.check, .stop.retry { border-color: var(--warn); background: var(--warn-bg); }
 .stop.unreadable, .stop.missing { border-color: var(--bad); background: var(--bad-bg); }
 .badge { font-size: 12px; font-weight: 700; }
@@ -100,12 +105,23 @@ main { max-width: 720px; margin: 0 auto; padding: 12px 16px 96px; }
 
 .optimise-bar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
-  display: flex; gap: 10px; align-items: center;
+  display: flex; flex-direction: column; gap: 8px;
   padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
   background: var(--card); border-top: 1px solid var(--line);
 }
-.optimise-bar label { font-size: 14px; color: var(--muted); display: flex; flex-direction: column; }
-.optimise-bar input { font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+.bar-fields { display: flex; gap: 10px; }
+.bar-fields label, .end-pick { font-size: 14px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.bar-fields label:last-child { flex: 1; min-width: 0; }
+.optimise-bar input, .optimise-bar select, .end-pick select {
+  font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); min-height: 40px; width: 100%;
+}
+.end-pick { margin: 8px 0; }
+.visit.end-row .seq { background: none; font-size: 22px; }
+.homes { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 0; }
+.homes legend { font-size: 14px; font-weight: 600; padding: 0 4px; }
+.home-row { display: flex; gap: 6px; }
+.home-row input:first-child { flex: 1; min-width: 0; }
+.home-row input:last-child { width: 9ch; }
 
 #map { height: 45vh; min-height: 260px; border-radius: 12px; border: 1px solid var(--line); margin: 8px 0; z-index: 0; }
 .summary-card { display: flex; flex-wrap: wrap; gap: 4px 16px; }

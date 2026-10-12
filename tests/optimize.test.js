@@ -105,3 +105,40 @@ test('time helpers', () => {
   assert.equal(toHHMM(34200), '09:30');
   assert.equal(toSec(''), null);
 });
+
+test('AM and PM envelopes for one building share the 13:00-13:30 overlap', () => {
+  const place = { lat: 1, lng: 2 };
+  const [g] = groupStops([
+    { postcode: '260008', place, from: '09:00', to: '13:30' },
+    { postcode: '260008', place, from: '13:00', to: '18:00' },
+  ], 120);
+  assert.deepEqual(g.window, { start: toSec('13:00'), end: toSec('13:30') });
+});
+
+test('PM stops wait for 13:00 and AM stops come first', () => {
+  // hub 0; PM stop right next to the hub, AM stop further away
+  const d = lineMatrix([0, 60, 600]);
+  const r = optimizeRoute(d, [
+    { window: { start: toSec('13:00'), end: toSec('18:00') } },
+    { window: { start: toSec('09:00'), end: toSec('13:30') } },
+  ], { departure: toSec('09:00') });
+  assert.deepEqual(r.order, [1, 0], 'AM stop first even though the PM stop is closer');
+  assert.equal(r.lateCount, 0);
+});
+
+test('a fixed end point changes the best order (ride home after the last stop)', () => {
+  // hub at 0, stops at -10 and +10, home at +50
+  const d = lineMatrix([0, -10, 10, 50]);
+  const open = optimizeRoute(d, [{}, {}]);
+  assert.equal(open.endArrive, open.finish, 'open end: run ends at the last stop');
+  const home = optimizeRoute(d, [{}, {}], { endIndex: 3 });
+  assert.deepEqual(home.order, [0, 1], 'west stop first so the last stop is on the way home');
+  assert.equal(home.finish, 30);
+  assert.equal(home.endArrive, 70);
+});
+
+test('ending back at the hub makes a round trip', () => {
+  const d = lineMatrix([0, 10, 20, 0]); // index 3 = hub again
+  const r = optimizeRoute(d, [{}, {}], { endIndex: 3 });
+  assert.equal(r.endArrive, 40);
+});

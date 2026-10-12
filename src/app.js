@@ -9,12 +9,25 @@ import { readSheetPhoto } from './ocr-browser.js';
 const STATE_KEY = 'ro.state.v1';
 const $ = (id) => document.getElementById(id);
 
+// Every run starts here unless changed in Settings.
+const DEFAULT_HUB = {
+  postcode: '059764',
+  place: { postcode: '059764', lat: 1.287426202547999, lng: 103.8443195274642, blk: '18', road: 'HAVELOCK ROAD', building: 'MINISTRY OF MANPOWER BUILDING', address: '18 HAVELOCK ROAD MINISTRY OF MANPOWER BUILDING SINGAPORE 059764' },
+};
+const newRun = () => ({ stops: [], plan: null, progress: {}, departure: '', end: 'none' });
+
 const state = load();
 function load() {
-  const fallback = { settings: { hub: null, serviceMin: 2, nav: 'google' }, run: { stops: [], plan: null, progress: {}, departure: '' } };
+  const fallback = {
+    settings: { hub: DEFAULT_HUB, homes: [{ name: 'Home 1', postcode: '', place: null }, { name: 'Home 2', postcode: '', place: null }], serviceMin: 2, nav: 'google' },
+    run: newRun(),
+  };
   try {
     const s = JSON.parse(localStorage.getItem(STATE_KEY));
-    return s ? { settings: { ...fallback.settings, ...s.settings }, run: { ...fallback.run, ...s.run } } : fallback;
+    if (!s) return fallback;
+    const settings = { ...fallback.settings, ...s.settings };
+    settings.hub ||= DEFAULT_HUB;
+    return { settings, run: { ...fallback.run, ...s.run } };
   } catch { return fallback; }
 }
 function save() {
@@ -50,21 +63,32 @@ function renderHub() {
 function openSettings() {
   $('hubInput').value = state.settings.hub?.postcode || '';
   $('hubResolved').innerHTML = state.settings.hub ? placeLine(state.settings.hub.place) : '';
+  state.settings.homes.forEach((h, i) => {
+    $(`home${i}Name`).value = h.name;
+    $(`home${i}Code`).value = h.postcode;
+    $(`home${i}Resolved`).innerHTML = h.place ? placeLine(h.place) : '';
+  });
   $('serviceInput').value = state.settings.serviceMin;
   $('navInput').value = state.settings.nav;
   $('settingsDlg').showModal();
 }
 $('settingsBtn').onclick = openSettings;
-$('hubInput').addEventListener('input', async (e) => {
-  const v = e.target.value.trim();
-  $('hubResolved').textContent = '';
-  if (!/^\d{6}$/.test(v)) return;
-  $('hubResolved').textContent = 'Looking up…';
-  try {
-    const p = await lookupPostcode(v);
-    $('hubResolved').innerHTML = p ? placeLine(p) : 'No building found for that postal code.';
-  } catch { $('hubResolved').textContent = 'No internet: could not check the postal code.'; }
-});
+// Show the building as soon as a 6-digit postal code is typed.
+function previewPostcode(inputId, outId) {
+  $(inputId).addEventListener('input', async (e) => {
+    const v = e.target.value.trim();
+    $(outId).textContent = '';
+    if (!/^\d{6}$/.test(v)) return;
+    $(outId).textContent = 'Looking up…';
+    try {
+      const p = await lookupPostcode(v);
+      $(outId).innerHTML = p ? placeLine(p) : 'No building found for that postal code.';
+    } catch { $(outId).textContent = 'No internet: could not check the postal code.'; }
+  });
+}
+previewPostcode('hubInput', 'hubResolved');
+previewPostcode('home0Code', 'home0Resolved');
+previewPostcode('home1Code', 'home1Resolved');
 $('saveSettings').addEventListener('click', async (e) => {
   e.preventDefault();
   const code = $('hubInput').value.trim();
@@ -73,12 +97,36 @@ $('saveSettings').addEventListener('click', async (e) => {
     if (!p) { $('hubResolved').textContent = 'Please enter a valid 6-digit postal code.'; return; }
     state.settings.hub = { postcode: code, place: p };
   }
+  for (const i of [0, 1]) {
+    const home = state.settings.homes[i];
+    const hc = $(`home${i}Code`).value.trim();
+    home.name = $(`home${i}Name`).value.trim() || `Home ${i + 1}`;
+    if (!hc) { home.postcode = ''; home.place = null; continue; }
+    if (hc !== home.postcode) {
+      const p = await lookupPostcode(hc).catch(() => null);
+      if (!p) { $(`home${i}Resolved`).textContent = 'Please enter a valid 6-digit postal code.'; return; }
+      home.postcode = hc; home.place = p;
+    }
+  }
   state.settings.serviceMin = Math.max(0, Number($('serviceInput').value) || 0);
   state.settings.nav = $('navInput').value;
-  save(); renderHub(); $('settingsDlg').close();
+  save(); renderHub(); renderEndOptions(); $('settingsDlg').close();
 });
 
 // ---------- stops ----------
+// The company only offers two delivery slots.
+const SLOTS = {
+  am: { from: '09:00', to: '13:30', label: 'AM 9:00–1:30' },
+  pm: { from: '13:00', to: '18:00', label: 'PM 1:00–6:00' },
+};
+const slotOf = (s) => Object.keys(SLOTS).find((k) => SLOTS[k].from === s.from && SLOTS[k].to === s.to) || '';
+function setSlot(s, slot) {
+  s.from = SLOTS[slot]?.from || '';
+  s.to = SLOTS[slot]?.to || '';
+}
+const slotButtons = (current, attr) => [['', 'Any'], ['am', SLOTS.am.label], ['pm', SLOTS.pm.label]]
+  .map(([k, label]) => `<button class="chip ${current === k ? 'on' : ''}" ${attr}="${k}">${label}</button>`).join('');
+
 function renumber() { state.run.stops.forEach((s, i) => { s.sn = i + 1; }); }
 
 function renderStops() {
@@ -92,6 +140,11 @@ function renderStops() {
       + (retries ? ` <button id="retryBtn" class="btn small">↻ Retry address checks (${retries})</button>` : '')
     : '';
   $('retryBtn')?.addEventListener('click', retryLookups);
+  const counts = { am: 0, pm: 0 };
+  for (const s of stops) { const k = slotOf(s); if (k) counts[k]++; }
+  $('slotBar').hidden = !stops.length;
+  $('slotBar').innerHTML = `<span>Set all to:</span>${slotButtons(null, 'data-all-slot')}`
+    + `<span class="hint" style="margin:0">${counts.am} AM · ${counts.pm} PM · ${stops.length - counts.am - counts.pm} any</span>`;
   $('stopList').innerHTML = stops.map((s) => {
     const badge = {
       ok: '<span class="badge ok">✓ matches sheet</span>',
@@ -101,17 +154,15 @@ function renderStops() {
       missing: '<span class="badge bad">✗ Scanner skipped this row: type the postal code</span>',
       retry: '<span class="badge check">↻ Could not check this address yet (busy or no signal)</span>',
     }[s.status] || '';
-    const showWin = s.from || s.to || s.showWindow;
     return `<li class="stop ${s.status}" data-id="${s.id}">
       <span class="sn">#${s.sn}</span>
       <input class="code" inputmode="numeric" maxlength="6" value="${esc(s.postcode)}" aria-label="Postal code for #${s.sn}">
       <span class="tools">
         <button data-act="pri" class="${s.priority ? 'on' : ''}" aria-label="Priority" title="Priority">${s.priority ? '★' : '☆'}</button>
-        <button data-act="win" aria-label="Time window" title="Time window">⏰</button>
         <button data-act="del" aria-label="Remove" title="Remove">🗑</button>
       </span>
       <span class="addr">${placeLine(s.place)} ${badge}</span>
-      ${showWin ? `<span class="window">Deliver between <input type="time" data-act="from" value="${esc(s.from)}"> and <input type="time" data-act="to" value="${esc(s.to)}"></span>` : ''}
+      <span class="slots">${slotButtons(slotOf(s), 'data-slot')}</span>
     </li>`;
   }).join('');
 }
@@ -120,16 +171,14 @@ $('stopList').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if (!btn) return;
   const li = btn.closest('.stop'), s = state.run.stops.find((x) => x.id === li.dataset.id);
   if (btn.dataset.act === 'pri') s.priority = !s.priority;
-  if (btn.dataset.act === 'win') s.showWindow = !s.showWindow;
+  if ('slot' in btn.dataset) setSlot(s, btn.dataset.slot);
   if (btn.dataset.act === 'del') { state.run.stops = state.run.stops.filter((x) => x !== s); renumber(); }
   save(); renderStops();
 });
 $('stopList').addEventListener('change', async (e) => {
   const li = e.target.closest('.stop'); if (!li) return;
   const s = state.run.stops.find((x) => x.id === li.dataset.id);
-  if (e.target.dataset.act === 'from') s.from = e.target.value;
-  else if (e.target.dataset.act === 'to') s.to = e.target.value;
-  else if (e.target.classList.contains('code')) {
+  if (e.target.classList.contains('code')) {
     const v = e.target.value.trim();
     s.postcode = v; s.place = null; s.status = 'unreadable'; s.candidates = [v];
     if (/^\d{6}$/.test(v)) {
@@ -141,6 +190,12 @@ $('stopList').addEventListener('change', async (e) => {
     renderStops();
   }
   save();
+});
+
+$('slotBar').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-all-slot]'); if (!btn) return;
+  for (const s of state.run.stops) setSlot(s, btn.dataset.allSlot);
+  save(); renderStops();
 });
 
 $('addManualBtn').onclick = () => {
@@ -190,8 +245,8 @@ $('galleryInput').addEventListener('change', (e) => { handlePhotos(e.target.file
 
 $('clearBtn').onclick = () => {
   if (!confirm('Clear all stops and the route for today?')) return;
-  state.run = { stops: [], plan: null, progress: {}, departure: '' };
-  save(); renderStops(); $('progress').hidden = true;
+  state.run = newRun();
+  save(); renderStops(); renderEndOptions(); $('progress').hidden = true;
 };
 
 // ---------- optimise ----------
@@ -202,6 +257,22 @@ function defaultDeparture() {
 $('departInput').value = state.run.departure || defaultDeparture();
 $('departInput').addEventListener('change', (e) => { state.run.departure = e.target.value; save(); });
 
+// Where the run finishes: open (last stop), back at the hub, or one of the homes.
+function endChoice(key = state.run.end) {
+  if (key === 'hub') return { key, label: 'Hub', place: state.settings.hub.place };
+  const m = /^home(\d)$/.exec(key || '');
+  const home = m && state.settings.homes[Number(m[1])];
+  return home?.place ? { key, label: home.name, place: home.place } : null;
+}
+function renderEndOptions() {
+  const opts = [['none', 'Last stop (decide later)'], ['hub', 'Back to hub']];
+  state.settings.homes.forEach((h, i) => opts.push([`home${i}`, h.place ? h.name : `${h.name} (set in ⚙︎ Settings)`, !h.place]));
+  if (!endChoice() && state.run.end !== 'none') state.run.end = 'none';
+  const html = opts.map(([v, label, disabled]) => `<option value="${v}" ${disabled ? 'disabled' : ''}>${esc(label)}</option>`).join('');
+  for (const id of ['endInput', 'routeEndInput']) { $(id).innerHTML = html; $(id).value = state.run.end; }
+}
+$('endInput').addEventListener('change', (e) => { state.run.end = e.target.value; save(); renderEndOptions(); });
+
 $('optimiseBtn').onclick = async () => {
   if (!state.settings.hub) { openSettings(); return; }
   const usable = state.run.stops.filter((s) => s.place);
@@ -209,7 +280,7 @@ $('optimiseBtn').onclick = async () => {
   const unresolved = state.run.stops.length - usable.length;
   if (unresolved && !confirm(`${unresolved} row(s) have no valid postal code and will be left out. Continue?`)) return;
   try {
-    await optimise({ start: state.settings.hub.place, stops: usable, departureSec: toSec($('departInput').value) ?? nowSec() });
+    await optimise({ start: state.settings.hub.place, end: endChoice(), stops: usable, departureSec: toSec($('departInput').value) ?? nowSec() });
   } catch { return; /* message already shown */ }
   state.run.progress = {};
   save(); showTab('route');
@@ -217,10 +288,10 @@ $('optimiseBtn').onclick = async () => {
 
 const nowSec = () => { const d = new Date(); return d.getHours() * 3600 + d.getMinutes() * 60; };
 
-async function optimise({ start, stops, departureSec }) {
+async function optimise({ start, end, stops, departureSec }) {
   const btn = $('optimiseBtn'); btn.disabled = true; btn.textContent = 'Optimising…';
   try {
-    const plan = await buildPlan({ start, stops, departureSec, serviceMin: state.settings.serviceMin });
+    const plan = await buildPlan({ start, end, stops, departureSec, serviceMin: state.settings.serviceMin });
     state.run.plan = slimPlan(plan);
     return state.run.plan;
   } catch (err) {
@@ -254,9 +325,11 @@ function renderRoute() {
   if (!plan) return;
   const prog = state.run.progress;
   const remaining = plan.visits.filter((v) => !prog[v.postcode]);
-  const dur = plan.finish - plan.departure;
+  const over = plan.end?.arrive ?? plan.finish;
+  const dur = over - plan.departure;
   $('routeSummary').innerHTML = `
-    <div><div class="hint" style="margin:0">Finish about</div><div class="big">${toHHMM(plan.finish)}</div></div>
+    <div><div class="hint" style="margin:0">Last drop about</div><div class="big">${toHHMM(plan.finish)}</div></div>
+    ${plan.end?.arrive != null ? `<div><div class="hint" style="margin:0">At ${esc(plan.end.label)} about</div><div class="big">${toHHMM(plan.end.arrive)}</div></div>` : ''}
     <div><div class="hint" style="margin:0">Total</div><div class="big">${Math.floor(dur / 3600)}h ${Math.round((dur % 3600) / 60)}m</div></div>
     <div><div class="hint" style="margin:0">Distance</div><div class="big">${(plan.distance / 1000).toFixed(1)} km</div></div>
     <div><div class="hint" style="margin:0">Left</div><div class="big">${remaining.length}/${plan.visits.length}</div></div>
@@ -280,7 +353,12 @@ function renderRoute() {
         <button class="btn small" data-act="skip">${st === 'skipped' ? 'Unskip' : 'Skip'}</button>
       </div>
     </li>`;
-  }).join('');
+  }).join('') + (plan.end ? `<li class="visit end-row">
+      <span class="seq">🏁</span>
+      <div><div>${plan.end.arrive != null ? `<span class="eta">${toHHMM(plan.end.arrive)}</span> ` : ''}Finish at <b>${esc(plan.end.label)}</b></div>
+        <div class="meta">${placeLine(plan.end.place)}</div></div>
+      <div class="row-btns"><a class="btn small primary" href="${navUrl(plan.end.place, state.settings.nav)}" target="_blank" rel="noopener">Navigate</a></div>
+    </li>` : '');
   drawMap(plan);
 }
 
@@ -305,8 +383,9 @@ async function drawMap(plan) {
   if (layer) layer.remove();
   layer = L.layerGroup().addTo(map);
   const prog = state.run.progress;
-  const pts = [plan.start, ...plan.visits.map((v) => v.place)];
+  const pts = [plan.start, ...plan.visits.map((v) => v.place), ...(plan.end ? [plan.end.place] : [])];
   L.marker([plan.start.lat, plan.start.lng], { icon: L.divIcon({ className: 'marker-hub', html: 'H', iconSize: [26, 26] }) }).addTo(layer);
+  if (plan.end && plan.end.key !== 'hub') L.marker([plan.end.place.lat, plan.end.place.lng], { icon: L.divIcon({ className: 'marker-hub', html: '🏁', iconSize: [26, 26] }) }).bindPopup(esc(plan.end.label)).addTo(layer);
   plan.visits.forEach((v) => {
     L.marker([v.place.lat, v.place.lng], {
       icon: L.divIcon({ className: `marker-num ${prog[v.postcode] ? 'done' : ''}`, html: String(v.seq), iconSize: [26, 26] }),
@@ -326,7 +405,12 @@ $('reoptBtn').onclick = async () => {
   const plan = state.run.plan, prog = state.run.progress;
   const doneVisits = plan.visits.filter((v) => prog[v.postcode]);
   const todo = plan.visits.filter((v) => !prog[v.postcode]);
-  if (!todo.length) { alert('All stops are done or skipped.'); return; }
+  if (!todo.length) {
+    // nothing left to order: just point the finish row at the chosen end
+    const end = endChoice();
+    plan.end = end ? { ...end, arrive: null } : null;
+    delete plan.geometry; save(); renderRoute(); return;
+  }
   const stops = state.run.stops.filter((s) => todo.some((v) => v.stopIds.includes(s.id)));
   let start = [...doneVisits].reverse().find((v) => prog[v.postcode] === 'done')?.place || plan.start;
   try {
@@ -335,7 +419,7 @@ $('reoptBtn').onclick = async () => {
   } catch { /* no GPS permission or no fix: start from the last finished stop */ }
   const btn = $('reoptBtn'); btn.disabled = true; btn.textContent = 'Re-optimising…';
   try {
-    const fresh = await optimise({ start, stops, departureSec: nowSec() });
+    const fresh = await optimise({ start, end: endChoice(), stops, departureSec: nowSec() });
     fresh.visits = [...doneVisits, ...fresh.visits.map((v, i) => ({ ...v, seq: doneVisits.length + i + 1 }))];
     fresh.start = plan.start;
     fresh.departure = plan.departure;
@@ -344,7 +428,13 @@ $('reoptBtn').onclick = async () => {
   } catch { /* message already shown */ } finally { btn.disabled = false; btn.textContent = '↻ Re-optimise remaining stops from here'; }
 };
 
+$('routeEndInput').addEventListener('change', (e) => {
+  state.run.end = e.target.value; save(); renderEndOptions();
+  $('reoptBtn').click(); // re-plan the remaining stops towards the new finish
+});
+
 // ---------- start ----------
 renderHub();
 renderStops();
+renderEndOptions();
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});

@@ -1,5 +1,6 @@
 // Stop-order optimiser for one rider: start at the hub, visit every stop once,
-// finish at the last stop (no return trip).
+// then either finish at the last stop (open end) or ride on to a chosen end
+// point (back to the hub, or home).
 //
 // It respects optional time windows (arrive early -> wait; arrive late -> heavy
 // penalty) and priority stops (pushed earlier). Method: nearest-neighbour start,
@@ -13,15 +14,20 @@ const PRIORITY_WEIGHT = 1;    // each second a priority stop is delayed costs li
 /**
  * @param {number[][]} durations  seconds, index 0 = hub, 1..n = stops
  * @param {Array<{service?:number, window?:{start:number,end:number}|null, priority?:boolean}>} stops  length n
- * @param {object} opts  departure (seconds since midnight), timeLimitMs, seed
- * @returns {{order:number[], schedule:object[], cost:number, finish:number, lateCount:number}}
- *          order lists stop indexes 0..n-1 (not matrix indexes)
+ * @param {object} opts  departure (seconds since midnight), endIndex (matrix index of a
+ *                       fixed end point, or null for an open end), timeLimitMs, seed
+ * @returns {{order:number[], schedule:object[], cost:number, finish:number, endArrive:number, lateCount:number}}
+ *          order lists stop indexes 0..n-1 (not matrix indexes); finish = last stop done,
+ *          endArrive = arrival at the end point (same as finish for an open end)
  */
-export function optimizeRoute(durations, stops, { departure = 0, timeLimitMs = 400, maxRounds = 5000, seed = 1 } = {}) {
+export function optimizeRoute(durations, stops, { departure = 0, endIndex = null, timeLimitMs = 400, maxRounds = 5000, seed = 1 } = {}) {
   const n = stops.length;
-  if (n === 0) return { order: [], schedule: [], cost: 0, finish: departure, lateCount: 0 };
+  if (n === 0) {
+    const endArrive = endIndex == null ? departure : departure + durations[0][endIndex];
+    return { order: [], schedule: [], cost: endArrive - departure, finish: departure, endArrive, lateCount: 0, travel: 0 };
+  }
   const rand = mulberry32(seed);
-  const cost = (order) => evaluate(durations, stops, order, departure).cost;
+  const cost = (order) => evaluate(durations, stops, order, departure, endIndex).cost;
 
   let best = localSearch(nearestNeighbour(durations, n), cost);
   let bestCost = cost(best);
@@ -41,13 +47,13 @@ export function optimizeRoute(durations, stops, { departure = 0, timeLimitMs = 4
   return finish(best);
 
   function finish(order) {
-    const ev = evaluate(durations, stops, order, departure);
+    const ev = evaluate(durations, stops, order, departure, endIndex);
     return { order, ...ev };
   }
 }
 
 // Walk the route and compute arrival times, waiting, lateness and cost.
-export function evaluate(durations, stops, order, departure = 0) {
+export function evaluate(durations, stops, order, departure = 0, endIndex = null) {
   let t = departure, prev = 0, cost = 0, lateCount = 0, travel = 0;
   const schedule = [];
   for (const i of order) {
@@ -67,8 +73,12 @@ export function evaluate(durations, stops, order, departure = 0) {
     schedule.push({ stop: i, arrive, start, wait, late, leave: t, leg });
     prev = i + 1;
   }
-  cost += t - departure; // total time until the last stop is done
-  return { schedule, cost, finish: t, lateCount, travel };
+  // ride on to the chosen end point, if any
+  const endLeg = endIndex == null ? 0 : durations[prev][endIndex];
+  const endArrive = t + endLeg;
+  travel += endLeg;
+  cost += endArrive - departure; // total time until the run is over
+  return { schedule, cost, finish: t, endArrive, endLeg, lateCount, travel };
 }
 
 function nearestNeighbour(d, n) {

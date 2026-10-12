@@ -44,24 +44,32 @@ export function groupStops(stops, serviceSecPerEnvelope) {
   });
 }
 
-export async function buildPlan({ start, stops, departureSec, serviceMin = 2, providerId = 'osrm' }) {
+/**
+ * @param start  {lat,lng} where the run begins
+ * @param end    null = finish at the last stop; or { place: {lat,lng,...}, label } to ride on to
+ */
+export async function buildPlan({ start, end = null, stops, departureSec, serviceMin = 2, providerId = 'osrm' }) {
   const visits = groupStops(stops, serviceMin * 60);
   if (!visits.length) throw new Error('No stops with a valid address yet.');
-  const points = [start, ...visits.map((v) => v.place)];
+  const points = [start, ...visits.map((v) => v.place), ...(end ? [end.place] : [])];
+  const endIndex = end ? points.length - 1 : null;
   const matrix = await getMatrix(points, providerId);
-  const result = optimizeRoute(matrix.durations, visits, { departure: departureSec, timeLimitMs: 600 });
+  const result = optimizeRoute(matrix.durations, visits, { departure: departureSec, endIndex, timeLimitMs: 600 });
   const ordered = result.schedule.map((s, k) => ({
     ...visits[s.stop],
     seq: k + 1,
     arrive: s.arrive, start: s.start, wait: s.wait, late: s.late, leave: s.leave,
     legDistance: matrix.distances[k === 0 ? 0 : result.schedule[k - 1].stop + 1][s.stop + 1],
   }));
+  const lastIdx = result.schedule[result.schedule.length - 1].stop + 1;
+  const endDistance = end ? matrix.distances[lastIdx][endIndex] : 0;
   return {
     visits: ordered,
     departure: departureSec,
     finish: result.finish,
+    end: end ? { ...end, arrive: result.endArrive, legDistance: endDistance } : null,
     lateCount: result.lateCount,
-    distance: ordered.reduce((sum, v) => sum + (v.legDistance || 0), 0),
+    distance: ordered.reduce((sum, v) => sum + (v.legDistance || 0), 0) + endDistance,
     matrixSource: matrix.source,
     start,
   };
