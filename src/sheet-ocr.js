@@ -10,7 +10,7 @@
 //
 // `recognize(image, opts)` is injected so this runs in the browser and in Node:
 //   image = { data: Uint8Array ink mask (1 = ink), width, height }
-//   opts  = { digitsOnly: boolean }
+//   opts  = { digitsOnly: boolean, upscale?: number (enlarge before reading; boxes come back in original pixels) }
 //   returns [{ text, bbox: { x0, y0, x1, y1 } }]
 
 import { binarize, removeLines } from './imageprep.js';
@@ -72,7 +72,7 @@ export function clusterRows(detections, rowGap) {
  * @param gray  grayscale Uint8Array of an upright (already rotated) photo
  * @param scale how much the photo was enlarged (pixel sizes below assume ~1449px-tall sheets at scale 1)
  */
-export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress = () => {} } = {}) {
+export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress = () => {}, unitScales = [2, 3] } = {}) {
   onProgress('Cleaning image');
   const mask = removeLines(binarize(gray, W, H, 12 * scale), W, H, 40 * scale);
 
@@ -124,6 +124,47 @@ export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress =
       .sort((p, q) => p.bbox.x0 - q.bbox.x0)
       .map((w) => w.text).join(' ');
   }
+  // Flr and Unit: two narrow columns a fixed distance left of PostCd (about 4
+  // postcode-widths on this sheet; the printed "Flr"/"Unit" headers refine it
+  // when they're readable). Read that strip in pieces, like the postcodes.
+  onProgress('Reading floor and unit');
+  const flrH = words.find((w) => /^Flr$/i.test(w.text.trim()));
+  const unitH = words.find((w) => /^Unit$/i.test(w.text.trim()));
+  let offset = 4.1 * codeWidth;
+  if (flrH && unitH && Math.abs(centre(flrH.bbox).y - centre(unitH.bbox).y) < rowH * 0.5) {
+    const cy = centre(flrH.bbox).y, measured = line.a * cy + line.b - (flrH.bbox.x0 + unitH.bbox.x1) / 2;
+    if (measured > 2.5 * codeWidth && measured < 6 * codeWidth) offset = measured;
+  }
+  // Read the strip at two sizes. Together with the row-text read that makes
+  // three independent readings; a unit is only shown when two of them agree
+  // exactly, because a wrong unit is worse than a blank.
+  const readUnits = async (upscale) => {
+    const found = [];
+    for (let y0 = top; y0 < H; y0 += step) {
+      const mid = y0 + chunkH / 2;
+      const xc = line.a * mid + line.b - offset, half = codeWidth * 0.95;
+      const piece = cropMask(mask, W, H, xc - half, y0, 2 * half, chunkH);
+      if (piece.width < 10 || piece.height < 10) continue;
+      for (const w of await recognize(piece, { digitsOnly: true, upscale })) {
+        const t = w.text.replace(/[^0-9]/g, '');
+        if (!/^\d{2,4}$/.test(t)) continue;
+        // a number touching the crop edge may be cut off ("11" -> "1"), so don't trust it
+        if (w.bbox.x0 <= 2 || w.bbox.x1 >= piece.width - 2) continue;
+        const c = centre(w.bbox);
+        // rows run at right angles to the (possibly tilted) column, so shift y back to the PostCd row
+        found.push({ t, x: piece.left + c.x, y: piece.top + c.y - line.a * offset });
+      }
+    }
+    return rows.map((r) => {
+      const near = found.filter((u) => Math.abs(u.y - r.y) < rowH * 0.45).sort((p, q) => p.x - q.x);
+      const uniq = near.filter((u, i) => !near.slice(0, i).some((v) => Math.abs(v.x - u.x) < codeWidth * 0.3)); // overlapping pieces
+      return formatUnit(uniq.map((u) => u.t));
+    });
+  };
+  const [readA, readB] = [await readUnits(unitScales[0]), await readUnits(unitScales[1])];
+  // both reads are kept; the final vote (with the row-text read) happens in resolveRow
+  rows.forEach((r, i) => { r.unitReads = [readA[i], readB[i]]; });
+
   // A gap of ~2 row-heights between readings means the scanner skipped a row there.
   let possibleMissing = 0;
   rows.forEach((r, i) => {
@@ -131,6 +172,19 @@ export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress =
     possibleMissing += r.missingBefore;
   });
   return { rows, possibleMissing };
+}
+
+// ["07", "11"] -> "07-11"; landed houses ("00 00") and unclear readings -> "".
+// The sheet always prints at least 2 digits for each, so a 1-digit reading
+// means a clipped or misread number: rejected, never padded into a guess.
+export function formatUnit(parts) {
+  let floor, unit;
+  if (parts.length === 2) [floor, unit] = parts;
+  else if (parts.length === 1 && /^\d{4}$/.test(parts[0])) { floor = parts[0].slice(0, 2); unit = parts[0].slice(2); }
+  else return '';
+  if (!/^\d{2,3}$/.test(floor) || !/^\d{2,3}[A-Z]?$/.test(unit)) return '';
+  if (/^0+$/.test(floor) && /^0+$/.test(unit)) return '';
+  return `${floor}-${unit}`;
 }
 
 // Header words used to pick which way up the photo is.

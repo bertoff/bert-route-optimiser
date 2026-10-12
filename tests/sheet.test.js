@@ -85,3 +85,32 @@ test('resolveRow reports "retry" (not "unreadable") when OneMap cannot be reache
   assert.equal(r.status, 'retry');
   assert.equal(r.postcode, '266477');
 });
+
+test('formatUnit turns floor and unit readings into "07-11"', async () => {
+  const { formatUnit } = await import('../src/sheet-ocr.js');
+  assert.equal(formatUnit(['07', '11']), '07-11');
+  assert.equal(formatUnit(['12', '171']), '12-171');
+  assert.equal(formatUnit(['7', '1']), '', 'single digits mean clipped numbers: never padded into a guess');
+  assert.equal(formatUnit(['0711']), '07-11');
+  assert.equal(formatUnit(['00', '00']), '', 'landed house: no unit');
+  assert.equal(formatUnit(['07']), '', 'only one number: unsure');
+  assert.equal(formatUnit(['1', '07', '11']), '', 'three numbers: unsure');
+});
+
+test('extractUnit takes the two numbers just before the street name', async () => {
+  const { extractUnit } = await import('../src/geocode.js');
+  const place = { road: 'EMPRESS ROAD', building: 'FARRER GARDENS' };
+  assert.equal(extractUnit('2 S****123A AA SAMPLE PTE 8 FARRER GARDENS 07 11 EMPRESS ROAD', place), '07-11');
+  assert.equal(extractUnit('31 S****1A SAMPLE 19 04 50 EMPRESS ROAD', place), '04-50', 'block number before floor/unit is ignored');
+  assert.equal(extractUnit('7 S****8B SAMPLE 90 EMPRESS ROAD', place), '', 'block number alone is not a unit');
+  assert.equal(extractUnit('9 SAMPLE 7A 00 00 EMPRESS ROAD', place), '', 'landed');
+});
+
+test('voteUnit needs two matching reads', async () => {
+  const { voteUnit } = await import('../src/geocode.js');
+  assert.equal(voteUnit(['07-11', '07-11', '']), '07-11');
+  assert.equal(voteUnit(['07-11', '', '07-11']), '07-11');
+  assert.equal(voteUnit(['07-11', '07-01', '']), '', 'disagreement: blank, not a guess');
+  assert.equal(voteUnit(['07-11', '', '']), '', 'a single read is not enough');
+  assert.equal(voteUnit([]), '');
+});

@@ -102,6 +102,39 @@ export function editDistance(a, b) {
 }
 
 /**
+ * Floor and unit from the sheet row, e.g. "07-11". On the sheet the Flr and
+ * Unit columns sit just left of the street name, so we find the street in the
+ * OCR'd row text and take the two numbers right before it. "00 00" (landed
+ * house) and anything unclear give "" rather than a guess.
+ */
+export function extractUnit(rowText, place) {
+  if (!rowText || !place) return '';
+  const words = String(rowText).toUpperCase().split(/\s+/).map((w) => w.replace(/[^A-Z0-9]/g, '')).filter(Boolean);
+  const roadWords = tokens(place.road).filter((w) => w.length >= 4 && !GENERIC.has(w));
+  const key = roadWords[0] || tokens(place.road)[0];
+  if (!key) return '';
+  // last occurrence: the street column is the right-most text before the postcode
+  let at = -1;
+  words.forEach((w, i) => { if (editDistance(w, key) <= (key.length >= 7 ? 2 : 1)) at = i; });
+  if (at < 1) return '';
+  const num = (w) => /^\d{2,3}[A-Z]?$/.test(w); // the sheet prints Flr/Unit with 2+ digits
+  let floor, unit;
+  if (at >= 2 && num(words[at - 2]) && num(words[at - 1])) { floor = words[at - 2]; unit = words[at - 1]; }
+  else if (/^\d{4}$/.test(words[at - 1])) { floor = words[at - 1].slice(0, 2); unit = words[at - 1].slice(2); } // "07 11" read as "0711"
+  else return '';
+  if (/^0+$/.test(floor) && /^0+$/.test(unit)) return '';
+  return `${floor}-${unit}`;
+}
+
+/** A Flr-Unit reading shown only when at least two independent reads agree exactly. */
+export function voteUnit(reads) {
+  const tally = new Map();
+  for (const r of reads) if (r) tally.set(r, (tally.get(r) || 0) + 1);
+  for (const [value, n] of tally) if (n >= 2) return value;
+  return '';
+}
+
+/**
  * Pick the best reading for one OCR'd sheet row.
  * status: 'ok' (code exists and the row text mentions its road/building),
  *         'check' (code exists but the row text didn't confirm it),
@@ -113,8 +146,9 @@ export async function resolveRow(row, lookup = lookupPostcode) {
     let place;
     try { place = await lookup(code); } catch { failed = true; continue; }
     if (!place) continue;
-    if (rowMatchesPlace(row.rowText, place)) return { postcode: code, place, status: 'ok' };
-    firstFound ??= { postcode: code, place, status: 'check' };
+    const unit = voteUnit([...(row.unitReads || []), extractUnit(row.rowText, place)]);
+    if (rowMatchesPlace(row.rowText, place)) return { postcode: code, place, status: 'ok', unit };
+    firstFound ??= { postcode: code, place, status: 'check', unit };
   }
   // 'retry': OneMap couldn't be reached, so we don't know yet whether the code is real
   return firstFound ?? { postcode: row.candidates[0] || '', place: null, status: failed ? 'retry' : 'unreadable' };

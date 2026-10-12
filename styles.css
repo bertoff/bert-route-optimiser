@@ -82,6 +82,12 @@ main { max-width: 720px; margin: 0 auto; padding: 12px 16px 170px; }
   background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin: 6px 0;
 }
 .stop .sn { color: var(--muted); font-weight: 700; font-size: 14px; }
+.stop .codes { display: flex; gap: 6px; align-items: center; }
+.stop .unit {
+  width: 9ch; font: 600 15px ui-monospace, Menlo, Consolas, monospace; padding: 6px;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);
+}
+.unit-tag { display: inline-block; padding: 0 6px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-weight: 700; font-size: 0.95em; }
 .stop .code {
   width: 7.5ch; font: 600 16px ui-monospace, Menlo, Consolas, monospace; padding: 6px;
   border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text);

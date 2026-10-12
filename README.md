@@ -17,6 +17,11 @@ No paid apps, no accounts, no stop limit.
    - ⚠ **check against sheet**: real postal code, but the row was too blurry to confirm
    - ✗ **not a real postal code**, or **scanner skipped this row**: type it in
    - ↻ **couldn't check yet**: no signal or OneMap busy; tap *Retry address checks*
+
+   **Flr-Unit** (e.g. `07-11`) is read too, but only filled in when two of three
+   separate readings agree. Otherwise it's left blank rather than guessed, so
+   expect some blanks. Type any missing ones in the box next to the postal code
+   (`7 11`, `#07-11` and `0711` all become `07-11`). Landed houses (`00-00`) show no unit.
 3. **Optimise**: envelopes for the same building become one stop. The order
    starts at your hub, ends at the last stop, and respects each envelope's
    delivery slot (**AM 9:00–1:30** or **PM 1:00–6:00**, or **Any**) and

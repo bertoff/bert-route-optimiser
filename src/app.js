@@ -36,7 +36,16 @@ function save() {
 
 const uid = () => Math.random().toString(36).slice(2, 9);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const placeLine = (p) => p ? `<b>${esc(p.blk)} ${esc(p.road)}</b>${p.building ? ' · ' + esc(p.building) : ''}` : '';
+const placeLine = (p, unit) => p
+  ? `<b>${esc(p.blk)} ${esc(p.road)}</b>${unit ? ` <span class="unit-tag">Unit ${esc(unit)}</span>` : ''}${p.building ? ' · ' + esc(p.building) : ''}`
+  : '';
+// "7-11", "#07-11", "07 11", "0711" -> "07-11"; anything else is kept as typed
+function normalizeUnit(v) {
+  const t = String(v || '').trim().replace(/^#/, '');
+  if (!t) return '';
+  let m = /^(\d{1,3})\s*[-–\s/]\s*(\d{1,4}[A-Za-z]?)$/.exec(t) || /^(\d{2})(\d{2,3})$/.exec(t);
+  return m ? `${m[1].padStart(2, '0')}-${m[2].padStart(2, '0').toUpperCase()}` : t.toUpperCase();
+}
 function toast(msg) { const el = $('progress'); el.hidden = false; el.textContent = msg; }
 
 // ---------- tabs ----------
@@ -156,12 +165,15 @@ function renderStops() {
     }[s.status] || '';
     return `<li class="stop ${s.status}" data-id="${s.id}">
       <span class="sn">#${s.sn}</span>
-      <input class="code" inputmode="numeric" maxlength="6" value="${esc(s.postcode)}" aria-label="Postal code for #${s.sn}">
+      <span class="codes">
+        <input class="code" inputmode="numeric" maxlength="6" value="${esc(s.postcode)}" aria-label="Postal code for #${s.sn}">
+        <input class="unit" maxlength="10" value="${esc(s.unit || '')}" placeholder="Flr-Unit" aria-label="Floor and unit for #${s.sn}">
+      </span>
       <span class="tools">
         <button data-act="pri" class="${s.priority ? 'on' : ''}" aria-label="Priority" title="Priority">${s.priority ? '★' : '☆'}</button>
         <button data-act="del" aria-label="Remove" title="Remove">🗑</button>
       </span>
-      <span class="addr">${placeLine(s.place)} ${badge}${state.run.progress[s.id] === 'success' ? ' <span class="badge ok">· Delivered (S)</span>' : ''}${state.run.progress[s.id] === 'failed' ? ' <span class="badge bad">· Failed (F)</span>' : ''}</span>
+      <span class="addr">${placeLine(s.place, s.unit)} ${badge}${state.run.progress[s.id] === 'success' ? ' <span class="badge ok">· Delivered (S)</span>' : ''}${state.run.progress[s.id] === 'failed' ? ' <span class="badge bad">· Failed (F)</span>' : ''}</span>
       <span class="slots">${slotButtons(slotOf(s), 'data-slot')}</span>
     </li>`;
   }).join('');
@@ -178,7 +190,10 @@ $('stopList').addEventListener('click', (e) => {
 $('stopList').addEventListener('change', async (e) => {
   const li = e.target.closest('.stop'); if (!li) return;
   const s = state.run.stops.find((x) => x.id === li.dataset.id);
-  if (e.target.classList.contains('code')) {
+  if (e.target.classList.contains('unit')) {
+    s.unit = normalizeUnit(e.target.value);
+    e.target.value = s.unit;
+  } else if (e.target.classList.contains('code')) {
     const v = e.target.value.trim();
     s.postcode = v; s.place = null; s.status = 'unreadable'; s.candidates = [v];
     if (/^\d{6}$/.test(v)) {
@@ -218,7 +233,7 @@ async function handlePhotos(files) {
         for (let m = 0; m < row.missingBefore; m++) added.push({ id: uid(), postcode: '', place: null, status: 'missing', priority: false, from: '', to: '' });
         const r = await resolveRow(row).catch(() => ({ postcode: row.candidates[0] || '', place: null, status: 'unreadable' }));
         // row text (names etc.) is used only for the check above and not kept
-        added.push({ id: uid(), postcode: r.postcode, place: r.place, status: r.status, candidates: row.candidates, priority: false, from: '', to: '' });
+        added.push({ id: uid(), postcode: r.postcode, place: r.place, status: r.status, unit: r.unit || '', candidates: row.candidates, priority: false, from: '', to: '' });
       }
       state.run.stops.push(...added);
       renumber(); save(); renderStops();
@@ -306,7 +321,7 @@ function slimPlan(plan) {
     ...plan,
     visits: plan.visits.map((v) => ({
       postcode: v.postcode, place: v.place, seq: v.seq, arrive: v.arrive, start: v.start, wait: v.wait, late: v.late,
-      window: v.window, priority: v.priority, envelopes: v.envelopes.map((e) => e.sn),
+      window: v.window, priority: v.priority, envelopes: v.envelopes.map((e) => e.sn), units: v.envelopes.map((e) => e.unit || ''),
       stopIds: v.envelopes.map((e) => e.id),
     })),
   };
@@ -359,19 +374,22 @@ function renderRoute() {
     const sts = v.stopIds.map((id) => prog[id]);
     const all = (want) => sts.every((x) => x === want);
     const multi = v.stopIds.length > 1;
+    // units: current envelopes' units (they may have been edited after optimising)
+    const units = v.stopIds.map((id, k) => state.run.stops.find((s) => s.id === id)?.unit ?? v.units?.[k] ?? '');
+    const oneUnit = units.every((u) => u === units[0]) ? units[0] : '';
     const resultBtns = multi
       ? `<button class="btn small ok ${all('success') ? 'on' : ''}" data-act="success">✓ All success</button>
          <button class="btn small bad ${all('failed') ? 'on' : ''}" data-act="failed">✗ All failed</button>`
       : `<button class="btn small ok ${all('success') ? 'on' : ''}" data-act="success">✓ Success</button>
          <button class="btn small bad ${all('failed') ? 'on' : ''}" data-act="failed">✗ Failed</button>`;
     const perEnvelope = multi ? `<div class="env-list">${v.stopIds.map((id, k) => `
-        <span class="env"><span class="env-sn">#${v.envelopes[k]}</span>
+        <span class="env"><span class="env-sn">#${v.envelopes[k]}${units[k] && !oneUnit ? ` <span class="unit-tag">${esc(units[k])}</span>` : ''}</span>
           <button class="chip ok ${prog[id] === 'success' ? 'on' : ''}" data-env="${id}" data-set="success" aria-label="Envelope ${v.envelopes[k]} success">✓</button>
           <button class="chip bad ${prog[id] === 'failed' ? 'on' : ''}" data-env="${id}" data-set="failed" aria-label="Envelope ${v.envelopes[k]} failed">✗</button></span>`).join('')}</div>` : '';
     return `<li class="visit ${vs} ${v.postcode === nextPc ? 'next' : ''}" data-pc="${v.postcode}">
       <span class="seq">${v.seq}</span>
       <div>
-        <div><span class="eta">${toHHMM(v.start)}</span> ${placeLine(v.place)}</div>
+        <div><span class="eta">${toHHMM(v.start)}</span> ${placeLine(v.place, oneUnit)}</div>
         <div class="meta">${v.postcode} · envelope${v.envelopes.length > 1 ? 's' : ''} ${v.envelopes.map((n) => '#' + n).join(' ')}${v.priority ? ' · ★ priority' : ''}${v.window ? ` · window ${toHHMM(v.window.start)}–${toHHMM(v.window.end)}` : ''}</div>
         ${v.late > 59 ? `<div class="late">About ${Math.round(v.late / 60)} min late for its window</div>` : ''}
         ${v.wait > 59 ? `<div class="wait">Arrive ${toHHMM(v.arrive)}, wait ${Math.round(v.wait / 60)} min for window</div>` : ''}

@@ -38,12 +38,22 @@ function maskToCanvas({ data, width, height }) {
   return canvas;
 }
 
-async function recognizeWords(worker, image, { digitsOnly }) {
+function enlarge(canvas, k) {
+  const big = document.createElement('canvas');
+  big.width = canvas.width * k; big.height = canvas.height * k;
+  const ctx = big.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(canvas, 0, 0, big.width, big.height);
+  return big;
+}
+
+async function recognizeWords(worker, image, { digitsOnly, upscale = 1 }) {
   await worker.setParameters(digitsOnly
     ? { tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '6' }
     : { tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
-  const { data } = await worker.recognize(image);
-  return data.words.map((w) => ({ text: w.text, bbox: w.bbox }));
+  const { data } = await worker.recognize(upscale > 1 ? enlarge(image, upscale) : image);
+  const k = upscale;
+  return data.words.map((w) => ({ text: w.text, bbox: { x0: w.bbox.x0 / k, y0: w.bbox.y0 / k, x1: w.bbox.x1 / k, y1: w.bbox.y1 / k } }));
 }
 
 /** @returns {Promise<{rows, possibleMissing, error?}>} */
