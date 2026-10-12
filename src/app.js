@@ -161,7 +161,7 @@ function renderStops() {
         <button data-act="pri" class="${s.priority ? 'on' : ''}" aria-label="Priority" title="Priority">${s.priority ? '★' : '☆'}</button>
         <button data-act="del" aria-label="Remove" title="Remove">🗑</button>
       </span>
-      <span class="addr">${placeLine(s.place)} ${badge}</span>
+      <span class="addr">${placeLine(s.place)} ${badge}${state.run.progress[s.id] === 'success' ? ' <span class="badge ok">· Delivered (S)</span>' : ''}${state.run.progress[s.id] === 'failed' ? ' <span class="badge bad">· Failed (F)</span>' : ''}</span>
       <span class="slots">${slotButtons(slotOf(s), 'data-slot')}</span>
     </li>`;
   }).join('');
@@ -275,14 +275,15 @@ $('endInput').addEventListener('change', (e) => { state.run.end = e.target.value
 
 $('optimiseBtn').onclick = async () => {
   if (!state.settings.hub) { openSettings(); return; }
-  const usable = state.run.stops.filter((s) => s.place);
-  if (!usable.length) { toast('Add some stops first.'); return; }
+  // envelopes already marked success/failed are finished, so they're not routed again
+  const usable = state.run.stops.filter((s) => s.place && !isFinished(state.run.progress[s.id]));
+  if (!usable.length) { toast(state.run.stops.length ? 'Every envelope is already marked success or failed.' : 'Add some stops first.'); return; }
   const unresolved = state.run.stops.length - usable.length;
   if (unresolved && !confirm(`${unresolved} row(s) have no valid postal code and will be left out. Continue?`)) return;
   try {
     await optimise({ start: state.settings.hub.place, end: endChoice(), stops: usable, departureSec: toSec($('departInput').value) ?? nowSec() });
   } catch { return; /* message already shown */ }
-  state.run.progress = {};
+  for (const id of Object.keys(state.run.progress)) if (state.run.progress[id] === 'skipped') delete state.run.progress[id];
   save(); showTab('route');
 };
 
@@ -319,12 +320,27 @@ const navUrl = (p, app) => ({
   apple: `https://maps.apple.com/?daddr=${p.lat},${p.lng}&dirflg=d`,
 }[app]);
 
+// Delivery results are kept per envelope (like the sheet's S/F column):
+// progress[stopId] = 'success' | 'failed' | 'skipped'
+const isFinished = (st) => st === 'success' || st === 'failed';
+function visitState(v) {
+  const st = v.stopIds.map((id) => state.run.progress[id]);
+  if (st.every(isFinished)) return st.includes('failed') ? (st.includes('success') ? 'done mixed' : 'done failed') : 'done';
+  if (st.every((x) => x === 'skipped')) return 'skipped';
+  return '';
+}
+function tally() {
+  const ids = state.run.stops.map((s) => s.id), prog = state.run.progress;
+  return { success: ids.filter((id) => prog[id] === 'success').length, failed: ids.filter((id) => prog[id] === 'failed').length };
+}
+
 function renderRoute() {
   const plan = state.run.plan;
   $('routeEmpty').hidden = !!plan; $('routeView').hidden = !plan;
   if (!plan) return;
   const prog = state.run.progress;
-  const remaining = plan.visits.filter((v) => !prog[v.postcode]);
+  const remaining = plan.visits.filter((v) => !visitState(v));
+  const t = tally();
   const over = plan.end?.arrive ?? plan.finish;
   const dur = over - plan.departure;
   $('routeSummary').innerHTML = `
@@ -332,14 +348,27 @@ function renderRoute() {
     ${plan.end?.arrive != null ? `<div><div class="hint" style="margin:0">At ${esc(plan.end.label)} about</div><div class="big">${toHHMM(plan.end.arrive)}</div></div>` : ''}
     <div><div class="hint" style="margin:0">Total</div><div class="big">${Math.floor(dur / 3600)}h ${Math.round((dur % 3600) / 60)}m</div></div>
     <div><div class="hint" style="margin:0">Distance</div><div class="big">${(plan.distance / 1000).toFixed(1)} km</div></div>
-    <div><div class="hint" style="margin:0">Left</div><div class="big">${remaining.length}/${plan.visits.length}</div></div>
+    <div><div class="hint" style="margin:0">Stops left</div><div class="big">${remaining.length}/${plan.visits.length}</div></div>
+    <div><div class="hint" style="margin:0">Envelopes</div><div class="big"><span class="ok-text">✓ ${t.success}</span> <span class="bad-text">✗ ${t.failed}</span></div></div>
     ${plan.lateCount ? `<div class="warn">⚠ ${plan.lateCount} stop(s) will miss their time window.</div>` : ''}
     ${plan.matrixSource === 'estimate' ? '<div class="warn">⚠ Map service unavailable: times are rough straight-line estimates.</div>' : ''}`;
 
   const nextPc = remaining[0]?.postcode;
   $('visitList').innerHTML = plan.visits.map((v) => {
-    const st = prog[v.postcode];
-    return `<li class="visit ${st || ''} ${v.postcode === nextPc ? 'next' : ''}" data-pc="${v.postcode}">
+    const vs = visitState(v);
+    const sts = v.stopIds.map((id) => prog[id]);
+    const all = (want) => sts.every((x) => x === want);
+    const multi = v.stopIds.length > 1;
+    const resultBtns = multi
+      ? `<button class="btn small ok ${all('success') ? 'on' : ''}" data-act="success">✓ All success</button>
+         <button class="btn small bad ${all('failed') ? 'on' : ''}" data-act="failed">✗ All failed</button>`
+      : `<button class="btn small ok ${all('success') ? 'on' : ''}" data-act="success">✓ Success</button>
+         <button class="btn small bad ${all('failed') ? 'on' : ''}" data-act="failed">✗ Failed</button>`;
+    const perEnvelope = multi ? `<div class="env-list">${v.stopIds.map((id, k) => `
+        <span class="env"><span class="env-sn">#${v.envelopes[k]}</span>
+          <button class="chip ok ${prog[id] === 'success' ? 'on' : ''}" data-env="${id}" data-set="success" aria-label="Envelope ${v.envelopes[k]} success">✓</button>
+          <button class="chip bad ${prog[id] === 'failed' ? 'on' : ''}" data-env="${id}" data-set="failed" aria-label="Envelope ${v.envelopes[k]} failed">✗</button></span>`).join('')}</div>` : '';
+    return `<li class="visit ${vs} ${v.postcode === nextPc ? 'next' : ''}" data-pc="${v.postcode}">
       <span class="seq">${v.seq}</span>
       <div>
         <div><span class="eta">${toHHMM(v.start)}</span> ${placeLine(v.place)}</div>
@@ -349,9 +378,10 @@ function renderRoute() {
       </div>
       <div class="row-btns">
         <a class="btn small primary" href="${navUrl(v.place, state.settings.nav)}" target="_blank" rel="noopener">Navigate</a>
-        <button class="btn small" data-act="done">${st === 'done' ? 'Undo' : '✓ Done'}</button>
-        <button class="btn small" data-act="skip">${st === 'skipped' ? 'Unskip' : 'Skip'}</button>
+        ${resultBtns}
+        <button class="btn small ${all('skipped') ? 'on' : ''}" data-act="skipped">${all('skipped') ? 'Unskip' : 'Skip'}</button>
       </div>
+      ${perEnvelope}
     </li>`;
   }).join('') + (plan.end ? `<li class="visit end-row">
       <span class="seq">🏁</span>
@@ -364,10 +394,18 @@ function renderRoute() {
 
 $('visitList').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if (!btn) return;
-  const pc = btn.closest('.visit').dataset.pc, prog = state.run.progress;
-  const want = btn.dataset.act === 'done' ? 'done' : 'skipped';
-  if (prog[pc] === want) delete prog[pc]; else prog[pc] = want;
-  save(); renderRoute();
+  const prog = state.run.progress;
+  const toggle = (id, want) => { if (prog[id] === want) delete prog[id]; else prog[id] = want; };
+  if (btn.dataset.env) {
+    toggle(btn.dataset.env, btn.dataset.set);
+  } else if (btn.dataset.act) {
+    const v = state.run.plan.visits.find((x) => x.postcode === btn.closest('.visit').dataset.pc);
+    const want = btn.dataset.act;
+    // tapping an already-active button undoes it
+    if (v.stopIds.every((id) => prog[id] === want)) v.stopIds.forEach((id) => delete prog[id]);
+    else v.stopIds.forEach((id) => { prog[id] = want; });
+  } else return;
+  save(); renderRoute(); renderStops();
 });
 
 async function drawMap(plan) {
@@ -382,13 +420,12 @@ async function drawMap(plan) {
   setTimeout(() => map.invalidateSize(), 0);
   if (layer) layer.remove();
   layer = L.layerGroup().addTo(map);
-  const prog = state.run.progress;
   const pts = [plan.start, ...plan.visits.map((v) => v.place), ...(plan.end ? [plan.end.place] : [])];
   L.marker([plan.start.lat, plan.start.lng], { icon: L.divIcon({ className: 'marker-hub', html: 'H', iconSize: [26, 26] }) }).addTo(layer);
   if (plan.end && plan.end.key !== 'hub') L.marker([plan.end.place.lat, plan.end.place.lng], { icon: L.divIcon({ className: 'marker-hub', html: '🏁', iconSize: [26, 26] }) }).bindPopup(esc(plan.end.label)).addTo(layer);
   plan.visits.forEach((v) => {
     L.marker([v.place.lat, v.place.lng], {
-      icon: L.divIcon({ className: `marker-num ${prog[v.postcode] ? 'done' : ''}`, html: String(v.seq), iconSize: [26, 26] }),
+      icon: L.divIcon({ className: `marker-num ${visitState(v)}`, html: String(v.seq), iconSize: [26, 26] }),
     }).bindPopup(`${v.seq}. ${placeLine(v.place)}<br>${toHHMM(v.start)}`).addTo(layer);
   });
   const latlngs = pts.map((p) => [p.lat, p.lng]);
@@ -402,9 +439,9 @@ async function drawMap(plan) {
 }
 
 $('reoptBtn').onclick = async () => {
-  const plan = state.run.plan, prog = state.run.progress;
-  const doneVisits = plan.visits.filter((v) => prog[v.postcode]);
-  const todo = plan.visits.filter((v) => !prog[v.postcode]);
+  const plan = state.run.plan;
+  const doneVisits = plan.visits.filter((v) => visitState(v));
+  const todo = plan.visits.filter((v) => !visitState(v));
   if (!todo.length) {
     // nothing left to order: just point the finish row at the chosen end
     const end = endChoice();
@@ -412,7 +449,7 @@ $('reoptBtn').onclick = async () => {
     delete plan.geometry; save(); renderRoute(); return;
   }
   const stops = state.run.stops.filter((s) => todo.some((v) => v.stopIds.includes(s.id)));
-  let start = [...doneVisits].reverse().find((v) => prog[v.postcode] === 'done')?.place || plan.start;
+  let start = [...doneVisits].reverse().find((v) => visitState(v).startsWith('done'))?.place || plan.start;
   try {
     const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 8000, maximumAge: 60000 }));
     start = { lat: pos.coords.latitude, lng: pos.coords.longitude };

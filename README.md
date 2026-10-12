@@ -26,7 +26,10 @@ No paid apps, no accounts, no stop limit.
    **Finish at** can be *Last stop (decide later)*, *Back to hub*, or one of two
    homes saved in ⚙︎ Settings. The order changes to suit: with a home picked,
    the last stops lead towards it.
-5. **Ride**: tap **Navigate**, then **✓ Done** or **Skip**. Running late? Change
+5. **Ride**: tap **Navigate**, then mark **✓ Success**, **✗ Failed** or **Skip**.
+   Buildings with several envelopes get ✓/✗ per envelope number (plus *All success* /
+   *All failed*), and the Stops list shows S/F next to each envelope, so the
+   sheet's Status column is easy to fill in. Tap an active button again to undo. Running late? Change
    **Finish at** on the Route screen and the remaining stops re-plan. Or tap
    **↻ Re-optimise remaining stops from here**.
 
