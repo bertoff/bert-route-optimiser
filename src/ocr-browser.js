@@ -3,7 +3,7 @@
 // with Tesseract.js (loaded from a CDN in index.html); photos never leave it.
 
 import { toGray, inkToRGBA } from './imageprep.js';
-import { readSheet, orientationScore } from './sheet-ocr.js';
+import { readSheet, orientationScore, chooseLongSide, TARGET_DIGIT_PX } from './sheet-ocr.js';
 
 const BASE_LONG_SIDE = 2576; // readSheet's pixel sizes were tuned at this size x scale
 
@@ -64,16 +64,19 @@ export async function readSheetPhoto(file, onProgress = () => {}) {
   // 1. Which way up? A landscape sheet shot in portrait is usually turned 90°.
   onProgress('Finding which way up the sheet is…');
   const tries = bitmap.height > bitmap.width ? [270, 90, 0, 180] : [0, 180, 270, 90];
-  let best = { deg: tries[0], score: -1 };
+  let best = { deg: tries[0], score: -1, words: [] };
   for (const deg of tries) {
     const words = await recognizeWords(worker, drawRotated(bitmap, deg, 1600), { digitsOnly: false });
     const score = orientationScore(words);
-    if (score > best.score) best = { deg, score };
+    if (score > best.score) best = { deg, score, words };
     if (score >= 3) break; // wrong orientations score ~0, so 3 is already clear
   }
 
-  // 2. Enlarge (small text reads far better) and read the PostCd column.
-  const longSide = Math.min(4600, Math.max(4000, Math.max(bitmap.width, bitmap.height)));
+  // 2. Resize so the text is a standard size however close the photo was taken
+  //    (small text reads far better enlarged), then read the sheet.
+  const auto = chooseLongSide(best.words, 1600);
+  const longSide = auto ?? Math.min(4600, Math.max(4000, Math.max(bitmap.width, bitmap.height)));
+  const scale = auto ? TARGET_DIGIT_PX / 14 : longSide / BASE_LONG_SIDE;
   const canvas = drawRotated(bitmap, best.deg, longSide);
   bitmap.close?.();
   const { width, height } = canvas;
@@ -82,5 +85,5 @@ export async function readSheetPhoto(file, onProgress = () => {}) {
 
   return readSheet(gray, width, height,
     (img, opts) => recognizeWords(worker, maskToCanvas(img), opts),
-    { scale: longSide / BASE_LONG_SIDE, onProgress });
+    { scale, onProgress });
 }

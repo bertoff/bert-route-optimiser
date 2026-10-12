@@ -18,9 +18,11 @@ No paid apps, no accounts, no stop limit.
    - ✗ **not a real postal code**, or **scanner skipped this row**: type it in
    - ↻ **couldn't check yet**: no signal or OneMap busy; tap *Retry address checks*
 
-   **Flr-Unit** (e.g. `07-11`) is read too, but only filled in when two of three
-   separate readings agree. Otherwise it's left blank rather than guessed, so
-   expect some blanks. Type any missing ones in the box next to the postal code
+   **Flr-Unit** (e.g. `07-11`, `23-3005`) is read from each row's own Flr and
+   Unit cells, found using the table's grid lines, so it works whether the photo
+   is taken close up or further away. It's only filled in when two of three
+   separate readings agree. Otherwise it's left blank rather than guessed (on
+   the test photos: 27 of 28 filled, none wrong). Type any missing ones in the box next to the postal code
    (`7 11`, `#07-11` and `0711` all become `07-11`). Landed houses (`00-00`) show no unit.
 3. **Optimise**: envelopes for the same building become one stop. The order
    starts at your hub, ends at the last stop, and respects each envelope's
@@ -38,8 +40,9 @@ No paid apps, no accounts, no stop limit.
    **Finish at** on the Route screen and the remaining stops re-plan. Or tap
    **↻ Re-optimise remaining stops from here**.
 
-Tips for good scans: lay the sheet flat, fill the frame, avoid shadows, and
-scan pages in order (page 1 first). Always compare the envelope count with the
+Tips for good scans: keep the header row and columns in the photo, lay the
+sheet flat, avoid shadows and glare, and scan pages in order (page 1 first).
+Close-up or whole page both work. Always compare the envelope count with the
 sheet.
 
 ## Run it on this PC

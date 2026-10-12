@@ -74,7 +74,8 @@ export function clusterRows(detections, rowGap) {
  */
 export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress = () => {}, unitScales = [2, 3] } = {}) {
   onProgress('Cleaning image');
-  const mask = removeLines(binarize(gray, W, H, 12 * scale), W, H, 40 * scale);
+  const ink = binarize(gray, W, H, 12 * scale);         // with grid lines: used to find the columns
+  const mask = removeLines(ink, W, H, 40 * scale);       // without grid lines: used for reading
 
   onProgress('Reading page');
   const words = await recognize({ data: mask, width: W, height: H }, { digitsOnly: false });
@@ -124,45 +125,25 @@ export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress =
       .sort((p, q) => p.bbox.x0 - q.bbox.x0)
       .map((w) => w.text).join(' ');
   }
-  // Flr and Unit: two narrow columns a fixed distance left of PostCd (about 4
-  // postcode-widths on this sheet; the printed "Flr"/"Unit" headers refine it
-  // when they're readable). Read that strip in pieces, like the postcodes.
+  // Flr and Unit. On each row, the table's vertical grid lines left of the
+  // postcode mark (right to left) PostCd | Street | Unit | Flr. Finding them
+  // per row copes with photos taken closer, further or at an angle. Each Flr
+  // and Unit cell is cut out between its lines and read on its own.
   onProgress('Reading floor and unit');
-  const flrH = words.find((w) => /^Flr$/i.test(w.text.trim()));
-  const unitH = words.find((w) => /^Unit$/i.test(w.text.trim()));
-  let offset = 4.1 * codeWidth;
-  if (flrH && unitH && Math.abs(centre(flrH.bbox).y - centre(unitH.bbox).y) < rowH * 0.5) {
-    const cy = centre(flrH.bbox).y, measured = line.a * cy + line.b - (flrH.bbox.x0 + unitH.bbox.x1) / 2;
-    if (measured > 2.5 * codeWidth && measured < 6 * codeWidth) offset = measured;
-  }
-  // Read the strip at two sizes. Together with the row-text read that makes
-  // three independent readings; a unit is only shown when two of them agree
-  // exactly, because a wrong unit is worse than a blank.
-  const readUnits = async (upscale) => {
-    const found = [];
-    for (let y0 = top; y0 < H; y0 += step) {
-      const mid = y0 + chunkH / 2;
-      const xc = line.a * mid + line.b - offset, half = codeWidth * 0.95;
-      const piece = cropMask(mask, W, H, xc - half, y0, 2 * half, chunkH);
-      if (piece.width < 10 || piece.height < 10) continue;
-      for (const w of await recognize(piece, { digitsOnly: true, upscale })) {
-        const t = w.text.replace(/[^0-9]/g, '');
-        if (!/^\d{2,4}$/.test(t)) continue;
-        // a number touching the crop edge may be cut off ("11" -> "1"), so don't trust it
-        if (w.bbox.x0 <= 2 || w.bbox.x1 >= piece.width - 2) continue;
-        const c = centre(w.bbox);
-        // rows run at right angles to the (possibly tilted) column, so shift y back to the PostCd row
-        found.push({ t, x: piece.left + c.x, y: piece.top + c.y - line.a * offset });
-      }
-    }
-    return rows.map((r) => {
-      const near = found.filter((u) => Math.abs(u.y - r.y) < rowH * 0.45).sort((p, q) => p.x - q.x);
-      const uniq = near.filter((u, i) => !near.slice(0, i).some((v) => Math.abs(v.x - u.x) < codeWidth * 0.3)); // overlapping pieces
-      return formatUnit(uniq.map((u) => u.t));
-    });
-  };
-  const [readA, readB] = [await readUnits(unitScales[0]), await readUnits(unitScales[1])];
-  // both reads are kept; the final vote (with the row-text read) happens in resolveRow
+  const cells = rows.map((r) => {
+    const xp = line.a * r.y + line.b;
+    const edges = columnEdges(ink, W, H, r.y, rowH * 0.32).filter((x) => x < xp - codeWidth * 0.3).sort((p, q) => q - p);
+    if (edges.length < 4) return null;
+    const [ePost, eUnitR, eFlrR, eFlrL] = edges;
+    const street = ePost - eUnitR, unitW = eUnitR - eFlrR, flrW = eFlrR - eFlrL;
+    // sanity: the street cell is wide; Flr and Unit cells are narrow
+    if (street < codeWidth * 1.2 || unitW < codeWidth * 0.3 || unitW > codeWidth * 2.2 || flrW < codeWidth * 0.3 || flrW > codeWidth * 2.2) return null;
+    return { flr: [eFlrL, eFlrR], unit: [eFlrR, eUnitR], y: r.y };
+  });
+  const [readA, readB] = [await readCells(mask, W, H, cells, rowH, codeWidth, recognize, unitScales[0]),
+    await readCells(mask, W, H, cells, rowH, codeWidth, recognize, unitScales[1])];
+  // both reads are kept; the final vote (with the row-text read) happens in resolveRow,
+  // and a unit is only shown when two readings agree: a wrong unit is worse than a blank
   rows.forEach((r, i) => { r.unitReads = [readA[i], readB[i]]; });
 
   // A gap of ~2 row-heights between readings means the scanner skipped a row there.
@@ -174,6 +155,80 @@ export async function readSheet(gray, W, H, recognize, { scale = 2, onProgress =
   return { rows, possibleMissing };
 }
 
+// x positions of vertical grid lines crossing the band y±halfBand: columns
+// where (almost) every pixel row has ink within ±2px. Slight slant is fine.
+export function columnEdges(ink, W, H, y, halfBand) {
+  const y0 = Math.max(0, Math.round(y - halfBand)), y1 = Math.min(H - 1, Math.round(y + halfBand));
+  const rowsInBand = y1 - y0 + 1, hits = new Uint16Array(W), prefix = new Int32Array(W + 1), win = 2;
+  for (let yy = y0; yy <= y1; yy++) {
+    const off = yy * W;
+    for (let x = 0; x < W; x++) prefix[x + 1] = prefix[x] + ink[off + x];
+    for (let x = 0; x < W; x++) {
+      const a = Math.max(0, x - win), b = Math.min(W, x + win + 1);
+      if (prefix[b] - prefix[a] > 0) hits[x]++;
+    }
+  }
+  const edges = [];
+  for (let x = 0; x < W; ) {
+    if (hits[x] >= rowsInBand * 0.9) {
+      let x2 = x; while (x2 + 1 < W && hits[x2 + 1] >= rowsInBand * 0.9) x2++;
+      edges.push((x + x2) / 2); x = x2 + 1;
+    } else x++;
+  }
+  return edges;
+}
+
+// Cut out every row's Flr and Unit cells, stack them into one image (one OCR
+// call per page) and read the digits. Returns "07-11" style values per row.
+async function readCells(mask, W, H, cells, rowH, codeWidth, recognize, upscale) {
+  const inset = Math.max(4, Math.round(codeWidth * 0.08));
+  const cellH = Math.round(rowH * 0.8), pad = Math.round(rowH * 0.3), gap = Math.round(codeWidth);
+  const valid = cells.map((c, i) => c && { ...c, i }).filter(Boolean);
+  if (!valid.length) return cells.map(() => '');
+  const flrMax = Math.max(...valid.map((c) => c.flr[1] - c.flr[0])), unitMax = Math.max(...valid.map((c) => c.unit[1] - c.unit[0]));
+  const outW = Math.round(pad + flrMax + gap + unitMax + pad), slot = cellH + pad, outH = pad + valid.length * slot;
+  const out = new Uint8Array(outW * outH);
+  const paste = (x0, x1, yc, dx, dy) => {
+    const left = Math.round(x0 + inset), right = Math.round(x1 - inset), top = Math.round(yc - cellH / 2);
+    for (let y = 0; y < cellH; y++) {
+      const sy = top + y; if (sy < 0 || sy >= H) continue;
+      for (let x = left; x < right; x++) if (x >= 0 && x < W && mask[sy * W + x]) out[(dy + y) * outW + dx + (x - left)] = 1;
+    }
+  };
+  const flrX = pad, unitX = Math.round(pad + flrMax + gap);
+  valid.forEach((c, k) => {
+    const dy = pad + k * slot;
+    paste(c.flr[0], c.flr[1], c.y, flrX, dy);
+    paste(c.unit[0], c.unit[1], c.y, unitX, dy);
+  });
+  const words = await recognize({ data: out, width: outW, height: outH }, { digitsOnly: true, upscale });
+  const parts = valid.map(() => ({ flr: [], unit: [] }));
+  for (const w of words) {
+    const t = w.text.replace(/[^0-9]/g, ''); if (!t) continue;
+    const c = centre(w.bbox), k = Math.floor((c.y - pad / 2) / slot);
+    if (k < 0 || k >= valid.length) continue;
+    (c.x < unitX - gap / 2 ? parts[k].flr : parts[k].unit).push({ t, x: c.x });
+  }
+  const result = cells.map(() => '');
+  valid.forEach((c, k) => {
+    const join = (arr) => arr.sort((p, q) => p.x - q.x).map((a) => a.t).join('');
+    result[c.i] = formatUnit([join(parts[k].flr), join(parts[k].unit)]);
+  });
+  return result;
+}
+
+// Make the photo just big enough that postcode digits are ~TARGET_DIGIT_PX
+// tall, whatever distance it was taken from. `words` come from a quick read of
+// the photo at `measuredLongSide`; returns the long side to resize to, or null.
+export const TARGET_DIGIT_PX = 28;
+export function chooseLongSide(words, measuredLongSide) {
+  const heights = words
+    .filter((w) => SIX.test(w.text.trim()) && w.bbox.x1 - w.bbox.x0 > w.bbox.y1 - w.bbox.y0)
+    .map((w) => w.bbox.y1 - w.bbox.y0);
+  if (heights.length < 2) return null;
+  return Math.round(Math.min(5200, Math.max(1600, measuredLongSide * TARGET_DIGIT_PX / median(heights))));
+}
+
 // ["07", "11"] -> "07-11"; landed houses ("00 00") and unclear readings -> "".
 // The sheet always prints at least 2 digits for each, so a 1-digit reading
 // means a clipped or misread number: rejected, never padded into a guess.
@@ -182,7 +237,7 @@ export function formatUnit(parts) {
   if (parts.length === 2) [floor, unit] = parts;
   else if (parts.length === 1 && /^\d{4}$/.test(parts[0])) { floor = parts[0].slice(0, 2); unit = parts[0].slice(2); }
   else return '';
-  if (!/^\d{2,3}$/.test(floor) || !/^\d{2,3}[A-Z]?$/.test(unit)) return '';
+  if (!/^\d{2,3}$/.test(floor) || !/^\d{2,4}[A-Z]?$/.test(unit)) return ''; // units can be 4 digits (23-3005)
   if (/^0+$/.test(floor) && /^0+$/.test(unit)) return '';
   return `${floor}-${unit}`;
 }

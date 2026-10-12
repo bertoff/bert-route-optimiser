@@ -114,3 +114,28 @@ test('voteUnit needs two matching reads', async () => {
   assert.equal(voteUnit(['07-11', '', '']), '', 'a single read is not enough');
   assert.equal(voteUnit([]), '');
 });
+
+test('formatUnit accepts 4-digit units like 23-3005', async () => {
+  const { formatUnit } = await import('../src/sheet-ocr.js');
+  assert.equal(formatUnit(['23', '3005']), '23-3005');
+  assert.equal(formatUnit(['01', '288']), '01-288');
+  assert.equal(formatUnit(['', '288']), '', 'missing floor: blank');
+});
+
+test('columnEdges finds vertical grid lines (even slightly slanted) but not text', async () => {
+  const { columnEdges } = await import('../src/sheet-ocr.js');
+  const W = 200, H = 120, ink = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) { ink[y * W + 40] = 1; ink[y * W + 120 + Math.floor(y / 60)] = 1; } // straight + slanted line
+  for (let y = 50; y < 70; y++) for (let x = 70; x < 74; x++) ink[y * W + x] = 1;                 // a 20px "digit" stroke
+  const edges = columnEdges(ink, W, H, 60, 40);
+  assert.equal(edges.length, 2);
+  assert.ok(Math.abs(edges[0] - 40) <= 2 && Math.abs(edges[1] - 120.5) <= 3);
+});
+
+test('chooseLongSide scales the photo so digits are ~28px tall', async () => {
+  const { chooseLongSide } = await import('../src/sheet-ocr.js');
+  const word = (h) => ({ text: '260008', bbox: { x0: 0, x1: h * 4, y0: 0, y1: h } });
+  assert.equal(chooseLongSide([word(14), word(14)], 1600), 3200, 'small text: enlarge');
+  assert.equal(chooseLongSide([word(28), word(28)], 1600), 1600, 'already the right size');
+  assert.equal(chooseLongSide([word(14)], 1600), null, 'too little evidence: let the caller decide');
+});

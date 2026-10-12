@@ -117,7 +117,7 @@ export function extractUnit(rowText, place) {
   let at = -1;
   words.forEach((w, i) => { if (editDistance(w, key) <= (key.length >= 7 ? 2 : 1)) at = i; });
   if (at < 1) return '';
-  const num = (w) => /^\d{2,3}[A-Z]?$/.test(w); // the sheet prints Flr/Unit with 2+ digits
+  const num = (w) => /^\d{2,4}[A-Z]?$/.test(w); // the sheet prints Flr/Unit with 2+ digits (units up to 4)
   let floor, unit;
   if (at >= 2 && num(words[at - 2]) && num(words[at - 1])) { floor = words[at - 2]; unit = words[at - 1]; }
   else if (/^\d{4}$/.test(words[at - 1])) { floor = words[at - 1].slice(0, 2); unit = words[at - 1].slice(2); } // "07 11" read as "0711"
