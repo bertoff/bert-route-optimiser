@@ -3,7 +3,7 @@
 
 import { lookupPostcode, resolveRow } from './geocode.js';
 import { buildPlan, retime, toHHMM, toSec } from './plan.js';
-import { providers } from './matrix.js';
+import { providers, snapPlace, entranceKey } from './matrix.js';
 import { readSheetPhoto } from './ocr-browser.js';
 
 const STATE_KEY = 'ro.state.v1';
@@ -19,7 +19,7 @@ const newRun = () => ({ stops: [], skipped: [], plan: null, progress: {}, depart
 const state = load();
 function load() {
   const fallback = {
-    settings: { hub: DEFAULT_HUB, homes: [{ name: 'Home 1', postcode: '', place: null }, { name: 'Home 2', postcode: '', place: null }], serviceMin: 2, nav: 'google', earlyMeters: 500 },
+    settings: { hub: DEFAULT_HUB, homes: [{ name: 'Home 1', postcode: '', place: null }, { name: 'Home 2', postcode: '', place: null }], serviceMin: 2, nav: 'google', earlyMeters: 500, entrances: {} },
     run: newRun(),
   };
   try {
@@ -27,6 +27,7 @@ function load() {
     if (!s) return fallback;
     const settings = { ...fallback.settings, ...s.settings };
     settings.hub ||= DEFAULT_HUB;
+    settings.entrances ||= {};
     return { settings, run: { ...fallback.run, ...s.run } };
   } catch { return fallback; }
 }
@@ -304,6 +305,7 @@ async function handlePhotos(files) {
       state.run.stops.push(...added);
       state.run.skipped.push(...struck);
       sortStops(); save(); renderStops();
+      added.forEach((s) => s.place && snapPlace(s.place)); // background, ~1 per second
       const bad = added.filter((s) => s.status !== 'ok').length;
       toast(`${label}Added ${added.length} rows.${bad ? ` ${bad} need a look (highlighted).` : ' All matched the sheet.'}`
         + (struck.length ? ` Skipped ${struck.length} crossed-out (${struck.map((k) => '#' + k.sn).join(', ')}).` : '')
@@ -390,7 +392,7 @@ function comparisonMessage(c) {
 async function optimise({ start, end, stops, departureSec, currentOrder = null }) {
   const btn = $('optimiseBtn'); btn.disabled = true; btn.textContent = 'Optimising…';
   try {
-    const plan = await buildPlan({ start, end, stops, departureSec, serviceMin: state.settings.serviceMin, earlyMeters: state.settings.earlyMeters, currentOrder });
+    const plan = await buildPlan({ start, end, stops, departureSec, serviceMin: state.settings.serviceMin, earlyMeters: state.settings.earlyMeters, currentOrder, entrances: state.settings.entrances });
     state.run.plan = slimPlan(plan);
     return state.run.plan;
   } catch (err) {
@@ -412,11 +414,18 @@ function slimPlan(plan) {
 
 // ---------- route ----------
 let map = null, layer = null;
-const navUrl = (p, app) => ({
-  google: `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving`,
-  waze: `https://waze.com/ul?ll=${p.lat},${p.lng}&navigate=yes`,
-  apple: `https://maps.apple.com/?daddr=${p.lat},${p.lng}&dirflg=d`,
-}[app]);
+// Navigation goes to a gate the rider saved; otherwise Google/Apple get the full
+// address (they know many condo entrances), and Waze the building's street point.
+const gateOf = (p) => state.settings.entrances?.[entranceKey(p)];
+function navUrl(p, app) {
+  const gate = gateOf(p);
+  const addr = encodeURIComponent(p.address || `${p.blk || ''} ${p.road || ''} Singapore ${p.postcode || ''}`.trim());
+  const pt = gate || p;
+  if (app === 'waze') return `https://waze.com/ul?ll=${pt.lat},${pt.lng}&navigate=yes`;
+  if (app === 'apple') return gate ? `https://maps.apple.com/?daddr=${gate.lat},${gate.lng}&dirflg=d` : `https://maps.apple.com/?daddr=${addr}&dirflg=d`;
+  return gate ? `https://www.google.com/maps/dir/?api=1&destination=${gate.lat},${gate.lng}&travelmode=driving`
+    : `https://www.google.com/maps/dir/?api=1&destination=${addr}&travelmode=driving`;
+}
 
 // Delivery results are kept per envelope (like the sheet's S/F column):
 // progress[stopId] = 'success' | 'failed' | 'skipped'
@@ -490,6 +499,7 @@ function renderRoute() {
         <a class="btn small primary" href="${navUrl(v.place, state.settings.nav)}" target="_blank" rel="noopener">Navigate</a>
         ${resultBtns}
         <button class="btn small ${all('skipped') ? 'on' : ''}" data-act="skipped">${all('skipped') ? 'Unskip' : 'Skip'}</button>
+        <button class="btn small gate ${gateOf(v.place) ? 'on' : ''}" data-gate="1" title="Save where you are now as the entrance">${gateOf(v.place) ? '📍 Gate saved' : '📍 Gate here'}</button>
       </div>
       ${perEnvelope}
       ${recipList}
@@ -506,6 +516,7 @@ function renderRoute() {
 $('visitList').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if (!btn) return;
   if (btn.dataset.move) { moveVisit(btn.closest('.visit').dataset.pc, btn.dataset.move === 'up' ? -1 : 1); return; }
+  if (btn.dataset.gate) { setGate(state.run.plan.visits.find((x) => x.postcode === btn.closest('.visit').dataset.pc).place); return; }
   const prog = state.run.progress;
   const toggle = (id, want) => { if (prog[id] === want) delete prog[id]; else prog[id] = want; };
   if (btn.dataset.env) {
@@ -578,6 +589,26 @@ $('reoptBtn').onclick = async () => {
     state.run.plan = fresh; save(); renderRoute();
   } catch { /* message already shown */ } finally { btn.disabled = false; btn.textContent = '↻ Re-optimise remaining stops from here'; }
 };
+
+// ---------- condo gates ----------
+// Standing at the right entrance, tap "Gate here": saved for the whole condo
+// (or this address), used for Navigate and for route planning from then on.
+async function setGate(place) {
+  const key = entranceKey(place), name = place.building || place.address || place.postcode;
+  if (state.settings.entrances[key]) {
+    if (confirm(`Forget the saved entrance for ${name}?`)) { delete state.settings.entrances[key]; save(); renderRoute(); }
+    return;
+  }
+  if (!confirm(`Save where you are now as the entrance for ${name}? Navigate will take you here next time.`)) return;
+  try {
+    const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }));
+    state.settings.entrances[key] = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+    save(); renderRoute();
+    routeMsg(`Entrance saved for ${name}. Re-optimise to plan with it.`);
+  } catch {
+    routeMsg('Could not get your location (allow location access for this app, then try again).');
+  }
+}
 
 // ---------- manual reorder ----------
 let editMode = false;

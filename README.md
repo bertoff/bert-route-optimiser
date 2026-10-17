@@ -48,6 +48,14 @@ No paid apps, no accounts, no stop limit.
    - **Stable**: the same stops and settings always give the same route.
      Optimising again only replaces the order on screen if the new one is
      genuinely faster (at least 1 minute), and a message says which happened.
+   - **Condos**: blocks of the same condo are planned as a short hop through its
+     carpark, never a lap of the roads outside. Each building is attached to its
+     own street from the address (not just the nearest road), so one-way loops
+     come out the right way round.
+   - **Entrances**: Navigate sends Google/Apple Maps the full address so they can use
+     the condo's entrance. If they still get it wrong, tap **📍 Gate here** at the
+     right entrance once: it's saved for every block of that condo and used for
+     Navigate and planning from then on.
    - **Edit order**: on the Route screen, tap **✎ Edit order** and use ▲/▼;
      arrival times update as you move stops.
 4. **Choose the finish**: every run starts at the hub (059764, changeable in ⚙︎).

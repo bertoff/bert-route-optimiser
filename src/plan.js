@@ -3,7 +3,7 @@
 // and stop details are kept in the plan ("model") so a hand-edited order can be
 // re-timed instantly and compared fairly with a fresh optimisation.
 
-import { getMatrix, haversine } from './matrix.js';
+import { getMatrix, haversine, sameCondoHops, entranceKey } from './matrix.js';
 import { optimizeRoute, evaluate } from './optimize.js';
 
 // "09:30" <-> seconds since midnight
@@ -84,13 +84,15 @@ export function retime(model, order) {
  * @param earlyMeters  how close a PM stop must be to an on-time stop to be delivered early
  * @param currentOrder  postcodes in the order currently shown; if it covers the same
  *                      stops, the new order only replaces it when genuinely faster
+ * @param entrances  gates the rider saved: { entranceKey(place): {lat, lng} }
  */
-export async function buildPlan({ start, end = null, stops, departureSec, serviceMin = 2, earlyMeters = 500, currentOrder = null, providerId = 'osrm' }) {
+export async function buildPlan({ start, end = null, stops, departureSec, serviceMin = 2, earlyMeters = 500, currentOrder = null, entrances = {}, providerId = 'osrm' }) {
   const visits = findAnchors(groupStops(stops, serviceMin * 60), earlyMeters);
   if (!visits.length) throw new Error('No stops with a valid address yet.');
-  const points = [start, ...visits.map((v) => v.place), ...(end ? [end.place] : [])];
+  const withGate = (p) => (p && entrances[entranceKey(p)] ? { ...p, entrance: entrances[entranceKey(p)] } : p);
+  const points = [start, ...visits.map((v) => v.place), ...(end ? [end.place] : [])].map(withGate);
   const endIndex = end ? points.length - 1 : null;
-  const matrix = await getMatrix(points, providerId);
+  const matrix = sameCondoHops(await getMatrix(points, providerId), points);
   const model = {
     durations: matrix.durations, distances: matrix.distances, departure: departureSec, endIndex,
     nodes: visits.map((v) => ({ postcode: v.postcode, service: v.service, window: v.window, priority: v.priority, earlyOk: v.earlyOk, anchors: v.anchors })),
