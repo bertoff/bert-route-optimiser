@@ -41,6 +41,7 @@
       <p class="hint">Scan pages in order (page 1 first). Lay the sheet flat and fill the frame.</p>
 
       <div id="progress" class="card progress" hidden></div>
+      <div id="skippedCard" class="card skipped" hidden></div>
       <div id="stopsSummary" class="summary"></div>
       <div id="slotBar" class="slot-bar" hidden></div>
       <ol id="stopList" class="stop-list"></ol>
@@ -62,7 +63,11 @@
         <div id="routeSummary" class="card summary-card"></div>
         <div id="map"></div>
         <label class="end-pick">Finish at <select id="routeEndInput"></select></label>
-        <button id="reoptBtn" class="btn">↻ Re-optimise remaining stops from here</button>
+        <div class="route-actions">
+          <button id="reoptBtn" class="btn">↻ Re-optimise remaining stops from here</button>
+          <button id="editOrderBtn" class="btn">✎ Edit order</button>
+        </div>
+        <div id="routeMsg" class="card msg" hidden></div>
         <ol id="visitList" class="visit-list"></ol>
       </div>
     </section>
@@ -84,6 +89,9 @@
       </fieldset>
       <label>Minutes per envelope (ID check + signature)
         <input id="serviceInput" type="number" min="0" max="15" step="0.5">
+      </label>
+      <label>Deliver a PM stop early if it's within this many metres of a stop being delivered on time
+        <input id="earlyInput" type="number" min="0" max="5000" step="50">
       </label>
       <label>Navigation app
         <select id="navInput">

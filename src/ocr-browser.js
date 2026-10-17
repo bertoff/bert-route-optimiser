@@ -47,10 +47,9 @@ function enlarge(canvas, k) {
   return big;
 }
 
-async function recognizeWords(worker, image, { digitsOnly, upscale = 1 }) {
-  await worker.setParameters(digitsOnly
-    ? { tessedit_char_whitelist: '0123456789', tessedit_pageseg_mode: '6' }
-    : { tessedit_char_whitelist: '', tessedit_pageseg_mode: '3' });
+async function recognizeWords(worker, image, { digitsOnly, chars, upscale = 1 }) {
+  const allowed = digitsOnly ? '0123456789' : chars || '';
+  await worker.setParameters({ tessedit_char_whitelist: allowed, tessedit_pageseg_mode: allowed ? '6' : '3' });
   const { data } = await worker.recognize(upscale > 1 ? enlarge(image, upscale) : image);
   const k = upscale;
   return data.words.map((w) => ({ text: w.text, bbox: { x0: w.bbox.x0 / k, y0: w.bbox.y0 / k, x1: w.bbox.x1 / k, y1: w.bbox.y1 / k } }));

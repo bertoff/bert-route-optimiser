@@ -24,16 +24,37 @@ No paid apps, no accounts, no stop limit.
    separate readings agree. Otherwise it's left blank rather than guessed (on
    the test photos: 27 of 28 filled, none wrong). Type any missing ones in the box next to the postal code
    (`7 11`, `#07-11` and `0711` all become `07-11`). Landed houses (`00-00`) show no unit.
+
+   From the current sheet layout the scanner also reads:
+   - **S/N**: from the sheet's own numbers (checked as a sequence)
+   - **DWindow**: `09001330` becomes AM and `13001800` becomes PM; anything unclear is left for you
+   - **Recipients**: RcptNames paired in order with the RcptHPNo numbers (split on `|`).
+     Tap 👤 on a stop to see or edit them. Numbers the two reads disagree on are
+     highlighted "check number".
+   - **DT** (attempt 1 or 2): shown quietly in the 👤 details only; it never changes the route
+   - **Crossed-out rows** (a pen line through the row): skipped and listed at the top
+     with an **Add back** button. Other handwriting is ignored.
+
+   The FIN and RcptIDs columns are never read or kept.
 3. **Optimise**: envelopes for the same building become one stop. The order
    starts at your hub, ends at the last stop, and respects each envelope's
    delivery slot (**AM 9:00–1:30** or **PM 1:00–6:00**, or **Any**) and
    priority stops (☆). Use **Set all to** for the common slot, then change the
    few that differ.
+   - **Early PM delivery**: a PM stop is delivered during the AM run when it's
+     within 500 m (straight line; change it in ⚙︎ Settings) of a stop being
+     delivered on time in the AM run. This is measured from that on-time stop, never
+     chained through another early stop, and it never makes an AM stop late. Far PM stops wait for 13:00.
+   - **Stable**: the same stops and settings always give the same route.
+     Optimising again only replaces the order on screen if the new one is
+     genuinely faster (at least 1 minute), and a message says which happened.
+   - **Edit order**: on the Route screen, tap **✎ Edit order** and use ▲/▼;
+     arrival times update as you move stops.
 4. **Choose the finish**: every run starts at the hub (059764, changeable in ⚙︎).
    **Finish at** can be *Last stop (decide later)*, *Back to hub*, or one of two
    homes saved in ⚙︎ Settings. The order changes to suit: with a home picked,
    the last stops lead towards it.
-5. **Ride**: tap **Navigate**, then mark **✓ Success**, **✗ Failed** or **Skip**.
+5. **Ride**: tap **Navigate**, **📞 Call** or **WhatsApp** for a recipient, then mark **✓ Success**, **✗ Failed** or **Skip**.
    Buildings with several envelopes get ✓/✗ per envelope number (plus *All success* /
    *All failed*), and the Stops list shows S/F next to each envelope, so the
    sheet's Status column is easy to fill in. Tap an active button again to undo. Running late? Change
@@ -73,6 +94,12 @@ npm test
 These cover the optimiser (including a brute-force check that it finds the best
 order on small cases), time windows, priority, grouping, image cleaning, row
 merging and address matching.
+
+## Privacy
+
+Photos are read on the phone and never saved or uploaded. Recipient names and
+phone numbers are stored only on your phone (cleared with *Clear today's run*).
+Only postal codes go to OneMap; only coordinates go to the travel-time service.
 
 ## Limits to know
 

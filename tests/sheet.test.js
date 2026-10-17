@@ -139,3 +139,66 @@ test('chooseLongSide scales the photo so digits are ~28px tall', async () => {
   assert.equal(chooseLongSide([word(28), word(28)], 1600), 1600, 'already the right size');
   assert.equal(chooseLongSide([word(14)], 1600), null, 'too little evidence: let the caller decide');
 });
+
+test('phones: numbers split on |, Singapore numbers only, in order', async () => {
+  const { parsePhones } = await import('../src/sheet-ocr.js');
+  assert.deepEqual(parsePhones(['91110001||']), ['91110001']);
+  assert.deepEqual(parsePhones(['91110002|', '81110003|']), ['91110002', '81110003']);
+  assert.deepEqual(parsePhones(['8111000491110005']), ['81110004', '91110005'], 'two numbers run together');
+  assert.deepEqual(parsePhones(['1234567|', '12345678']), [], 'not Singapore numbers');
+});
+
+test('recipients: 1st name with 1st number; agreeing reads are marked sure', async () => {
+  const { pairRecipients } = await import('../src/sheet-ocr.js');
+  const r = pairRecipients(['ANN TAN', 'BEN LIM'], ['91234567', '81234567'], ['91234567', '81234561']);
+  assert.deepEqual(r[0], { name: 'ANN TAN', phone: '91234567', sure: true });
+  assert.equal(r[1].name, 'BEN LIM');
+  assert.equal(r[1].sure, false, 'reads disagree: flagged for checking');
+  assert.ok(['81234567', '81234561'].includes(r[1].phone));
+  assert.deepEqual(pairRecipients(['ANN TAN'], [], []), [{ name: 'ANN TAN', phone: '', sure: false }]);
+});
+
+test('names are cleaned; DWindow and DT only accept real values', async () => {
+  const { cleanName, parseWindow, parseAttempt } = await import('../src/sheet-ocr.js');
+  assert.equal(cleanName(' nur-ashiqin  binte | '), 'NUR-ASHIQIN BINTE');
+  assert.equal(parseWindow('13001800'), 'pm');
+  assert.equal(parseWindow('0900 1330'), 'am');
+  assert.equal(parseWindow('1300180'), '', 'misread: left for the rider');
+  assert.equal(parseAttempt('2'), 2);
+  assert.equal(parseAttempt('7'), null);
+});
+
+test('S/N comes from the sequence most reads agree on', async () => {
+  const { assignSerials } = await import('../src/sheet-ocr.js');
+  const rows = Array.from({ length: 5 }, () => ({}));
+  assignSerials(rows, [31, 32, NaN, 84, 35]); // one unread, one misread
+  assert.deepEqual(rows.map((r) => r.sn), [31, 32, 33, 34, 35]);
+  const few = [{}, {}];
+  assignSerials(few, [7, NaN]);
+  assert.deepEqual(few.map((r) => r.sn), [null, null], 'one read is not enough');
+});
+
+test('traceLine follows a tilted grid line', async () => {
+  const { traceLine } = await import('../src/sheet-ocr.js');
+  const W = 600, H = 200, ink = new Uint8Array(W * H);
+  for (let x = 0; x < W; x++) { const y = Math.round(150 - x * 0.07); ink[y * W + x] = 1; ink[(y + 1) * W + x] = 1; } // about 4 degrees
+  const f = traceLine(ink, W, H, 500, Math.round(150 - 500 * 0.07), 0, W - 1, 60);
+  assert.ok(f, 'found the line');
+  assert.ok(Math.abs(f(40) - (150 - 40 * 0.07)) <= 3, `follows it to the left (got ${f(40)})`);
+  assert.equal(traceLine(new Uint8Array(W * H), W, H, 300, 100, 0, W - 1, 60), null, 'no line: nothing to follow');
+});
+
+test('a hand-drawn strike through a row is detected; printed text is not', async () => {
+  const { isStruckThrough, traceLine } = await import('../src/sheet-ocr.js');
+  const W = 900, H = 120, cw = 50;
+  const make = () => { const ink = new Uint8Array(W * H); for (let x = 0; x < W; x++) { ink[10 * W + x] = 1; ink[110 * W + x] = 1; } return ink; };
+  const row = (ink) => ({ y: 60, top: 10, bottom: 110, strikeX0: 20, gridded: true,
+    topLine: traceLine(ink, W, H, 850, 10, 0, W, cw), botLine: traceLine(ink, W, H, 850, 110, 0, W, cw) });
+  const line = { a: 0, b: 850 };
+  const text = make();
+  for (let w = 0; w < 10; w++) for (let x = 40 + w * 80; x < 90 + w * 80; x++) for (let y = 50; y < 70; y += 4) text[y * W + x] = 1; // words
+  assert.equal(isStruckThrough(text, W, H, row(text), line, cw), false);
+  const struck = make();
+  for (let x = 30; x < 860; x++) { const y = Math.round(60 + 4 * Math.sin(x / 40)); struck[y * W + x] = 1; struck[(y + 1) * W + x] = 1; }
+  assert.equal(isStruckThrough(struck, W, H, row(struck), line, cw), true);
+});

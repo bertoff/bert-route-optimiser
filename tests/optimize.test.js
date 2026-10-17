@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { optimizeRoute, evaluate } from '../src/optimize.js';
-import { groupStops, toSec, toHHMM } from '../src/plan.js';
+import { groupStops, findAnchors, retime, buildPlan, toSec, toHHMM } from '../src/plan.js';
+import { providers } from '../src/matrix.js';
 
 // Matrix from 1-D positions: travel time = distance (index 0 = hub)
 const lineMatrix = (positions) => positions.map((a) => positions.map((b) => Math.abs(a - b)));
@@ -37,7 +38,7 @@ test('matches brute force on random asymmetric matrices (7 stops)', () => {
     const n = 7;
     const d = Array.from({ length: n + 1 }, (_, i) => Array.from({ length: n + 1 }, (_, j) => (i === j ? 0 : Math.round(60 + rnd() * 900))));
     const stops = Array.from({ length: n }, () => ({ service: 120 }));
-    const r = optimizeRoute(d, stops, { seed: trial + 1, timeLimitMs: 200 });
+    const r = optimizeRoute(d, stops, { seed: trial + 1 });
     assert.equal(Math.round(r.cost), Math.round(bruteForce(d, stops)), `trial ${trial}`);
   }
 });
@@ -75,7 +76,7 @@ test('40 stops finish quickly and beat nearest-neighbour or equal it', () => {
   const d = pts.map((a) => pts.map((b) => Math.hypot(a[0] - b[0], a[1] - b[1]) / 8));
   const stops = Array.from({ length: 40 }, () => ({ service: 90 }));
   const t0 = Date.now();
-  const r = optimizeRoute(d, stops, { timeLimitMs: 300 });
+  const r = optimizeRoute(d, stops);
   assert.ok(Date.now() - t0 < 3000);
   assert.equal(new Set(r.order).size, 40);
   // nearest-neighbour baseline
@@ -106,13 +107,14 @@ test('time helpers', () => {
   assert.equal(toSec(''), null);
 });
 
-test('AM and PM envelopes for one building share the 13:00-13:30 overlap', () => {
+test('AM and PM envelopes for one building all go in the AM slot (PM is 0 m from an on-time AM delivery)', () => {
   const place = { lat: 1, lng: 2 };
   const [g] = groupStops([
     { postcode: '260008', place, from: '09:00', to: '13:30' },
     { postcode: '260008', place, from: '13:00', to: '18:00' },
   ], 120);
-  assert.deepEqual(g.window, { start: toSec('13:00'), end: toSec('13:30') });
+  assert.deepEqual(g.window, { start: toSec('09:00'), end: toSec('13:30') });
+  assert.equal(g.earlyOk, false);
 });
 
 test('PM stops wait for 13:00 and AM stops come first', () => {
@@ -141,4 +143,114 @@ test('ending back at the hub makes a round trip', () => {
   const d = lineMatrix([0, 10, 20, 0]); // index 3 = hub again
   const r = optimizeRoute(d, [{}, {}], { endIndex: 3 });
   assert.equal(r.endArrive, 40);
+});
+
+const AM = { start: toSec('09:00'), end: toSec('13:30') }, PM = { start: toSec('13:00'), end: toSec('18:00') };
+
+test('early delivery: a PM stop next to an on-time AM stop is delivered during the AM run', () => {
+  // hub 0, AM stop at 600, PM stop at 610 (next door), all on one road
+  const d = lineMatrix([0, 600, 610]);
+  const stops = [{ window: AM, service: 60 }, { window: PM, service: 60, earlyOk: true, anchors: [0] }];
+  const r = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  const pm = r.schedule.find((s) => s.stop === 1);
+  assert.equal(pm.early, true);
+  assert.equal(pm.wait, 0, 'no waiting until 13:00');
+  assert.ok(pm.start < toSec('13:00'));
+  assert.equal(r.lateCount, 0);
+});
+
+test('far PM stops still wait for 13:00', () => {
+  const d = lineMatrix([0, 600, 5000]);
+  const stops = [{ window: AM, service: 60 }, { window: PM, service: 60, earlyOk: true, anchors: [] }];
+  const r = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  const pm = r.schedule.find((s) => s.stop === 1);
+  assert.equal(pm.early, false);
+  assert.equal(pm.start, toSec('13:00'));
+});
+
+test('early delivery is not chained through another early PM stop', () => {
+  // PM stop B is near PM stop A only; A is near the AM stop. B must still wait.
+  const d = lineMatrix([0, 600, 610, 620]);
+  const stops = [
+    { window: AM, service: 60 },
+    { window: PM, service: 60, earlyOk: true, anchors: [0, 2] }, // A: near the AM stop
+    { window: PM, service: 60, earlyOk: true, anchors: [1] },    // B: only near A
+  ];
+  const r = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  const a = r.schedule.find((s) => s.stop === 1), b = r.schedule.find((s) => s.stop === 2);
+  assert.equal(a.early, true);
+  assert.equal(b.early, false);
+  assert.ok(b.start >= toSec('13:00'));
+});
+
+test('early PM deliveries never make an AM stop late', () => {
+  // two PM stops next to the hub with long handovers, one far AM stop that only
+  // makes 13:30 if gone to first
+  // delivering both PM stops early first would get to the AM stop at 13:33 (3 min late)
+  const d = lineMatrix([0, 10, 20, 14000]);
+  const stops = [
+    { window: PM, service: 1200, earlyOk: true, anchors: [2] },
+    { window: PM, service: 1200, earlyOk: true, anchors: [2] },
+    { window: AM, service: 60 },
+  ];
+  const r = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  assert.equal(r.lateCount, 0);
+  assert.equal(r.schedule.find((x) => x.stop === 2).late, 0, 'AM stop on time');
+  assert.ok(r.order.indexOf(2) < 2, 'not both PM stops before the AM stop');
+});
+
+test('findAnchors uses the distance setting (straight line)', () => {
+  const v = (lat, window) => ({ place: { lat, lng: 103.8 }, window, earlyOk: window === PM });
+  const visits = findAnchors([v(1.3000, AM), v(1.3030, PM), v(1.3100, PM)], 500); // ~330 m and ~1.1 km away
+  assert.deepEqual(visits[1].anchors, [0]);
+  assert.deepEqual(visits[2].anchors, []);
+  assert.deepEqual(findAnchors([v(1.3000, AM), v(1.3100, PM)], 2000)[1].anchors, [0]);
+});
+
+test('same stops and settings always give the same route', () => {
+  let seed = 11;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const pts = Array.from({ length: 26 }, () => [rnd() * 5000, rnd() * 5000]);
+  const d = pts.map((a) => pts.map((b) => Math.hypot(a[0] - b[0], a[1] - b[1]) / 8));
+  const stops = Array.from({ length: 25 }, (_, i) => ({ service: 90, window: i % 4 ? PM : AM }));
+  const a = optimizeRoute(d, stops, { departure: toSec('09:00') }), b = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  assert.deepEqual(a.order, b.order);
+});
+
+test('retime gives live ETAs for a hand-edited order', () => {
+  const model = { durations: lineMatrix([0, 10, 20]), distances: lineMatrix([0, 10, 20]), departure: 0, endIndex: null,
+    nodes: [{ service: 5 }, { service: 5 }] };
+  const a = retime(model, [0, 1]), b = retime(model, [1, 0]);
+  assert.deepEqual(a.times.map((t) => t.start), [10, 25]);
+  assert.deepEqual(b.times.map((t) => t.start), [20, 35]);
+  assert.equal(b.distance, 30);
+});
+
+test('re-optimising keeps the current order unless the new one is genuinely faster', async () => {
+  // fake travel-time service: positions along one road (seconds)
+  const pos = { 0: 0, 1: 100, 2: 200, 3: 300 };
+  providers.fake = { matrix: async (pts) => { const xs = pts.map((p) => pos[p.id]); const m = xs.map((a) => xs.map((b) => Math.abs(a - b))); return { durations: m, distances: m, source: 'fake' }; } };
+  const place = (id) => ({ id, lat: 1, lng: 2 });
+  const stops = ['1', '2', '3'].map((id) => ({ postcode: id, place: place(id) }));
+  const base = { start: place('0'), stops, departureSec: 0, serviceMin: 0, providerId: 'fake' };
+  const good = await buildPlan({ ...base, currentOrder: ['1', '2', '3'] });
+  assert.equal(good.comparison.switched, false, 'already the best: kept');
+  assert.deepEqual(good.visits.map((v) => v.postcode), ['1', '2', '3']);
+  const bad = await buildPlan({ ...base, currentOrder: ['3', '1', '2'] });
+  assert.equal(bad.comparison.switched, true);
+  assert.ok(bad.comparison.savedSec >= 60);
+  assert.deepEqual(bad.visits.map((v) => v.postcode), ['1', '2', '3']);
+  Object.assign(pos, { 1: 100, 2: 110, 3: 120 });
+  const close = await buildPlan({ ...base, currentOrder: ['1', '3', '2'] }); // only ~20 s slower
+  assert.equal(close.comparison.switched, false, 'not genuinely faster: kept');
+  assert.deepEqual(close.visits.map((v) => v.postcode), ['1', '3', '2']);
+  delete providers.fake;
+});
+
+test('an afternoon (on-time PM) delivery does not allow early delivery in the morning', () => {
+  // two PM stops next door to each other, no AM stops: nobody is on time before 13:00, so both wait
+  const d = lineMatrix([0, 600, 610]);
+  const stops = [{ window: PM, service: 60, earlyOk: true, anchors: [1] }, { window: PM, service: 60, earlyOk: true, anchors: [0] }];
+  const r = optimizeRoute(d, stops, { departure: toSec('09:00') });
+  assert.ok(r.schedule.every((x) => !x.early && x.start >= toSec('13:00')));
 });

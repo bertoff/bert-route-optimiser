@@ -2,7 +2,7 @@
 // Everything is saved on this phone (localStorage); photos are never stored.
 
 import { lookupPostcode, resolveRow } from './geocode.js';
-import { buildPlan, toHHMM, toSec } from './plan.js';
+import { buildPlan, retime, toHHMM, toSec } from './plan.js';
 import { providers } from './matrix.js';
 import { readSheetPhoto } from './ocr-browser.js';
 
@@ -14,12 +14,12 @@ const DEFAULT_HUB = {
   postcode: '059764',
   place: { postcode: '059764', lat: 1.287426202547999, lng: 103.8443195274642, blk: '18', road: 'HAVELOCK ROAD', building: 'MINISTRY OF MANPOWER BUILDING', address: '18 HAVELOCK ROAD MINISTRY OF MANPOWER BUILDING SINGAPORE 059764' },
 };
-const newRun = () => ({ stops: [], plan: null, progress: {}, departure: '', end: 'none' });
+const newRun = () => ({ stops: [], skipped: [], plan: null, progress: {}, departure: '', end: 'none' });
 
 const state = load();
 function load() {
   const fallback = {
-    settings: { hub: DEFAULT_HUB, homes: [{ name: 'Home 1', postcode: '', place: null }, { name: 'Home 2', postcode: '', place: null }], serviceMin: 2, nav: 'google' },
+    settings: { hub: DEFAULT_HUB, homes: [{ name: 'Home 1', postcode: '', place: null }, { name: 'Home 2', postcode: '', place: null }], serviceMin: 2, nav: 'google', earlyMeters: 500 },
     run: newRun(),
   };
   try {
@@ -47,6 +47,12 @@ function normalizeUnit(v) {
   return m ? `${m[1].padStart(2, '0')}-${m[2].padStart(2, '0').toUpperCase()}` : t.toUpperCase();
 }
 function toast(msg) { const el = $('progress'); el.hidden = false; el.textContent = msg; }
+function routeMsg(msg) { const el = $('routeMsg'); el.hidden = !msg; el.textContent = msg || ''; }
+
+// Phone numbers are kept as 8 digits; links add Singapore's +65.
+const phoneDigits = (v) => { let d = String(v || '').replace(/\D/g, ''); if (d.length === 10 && d.startsWith('65')) d = d.slice(2); return d; };
+const telUrl = (p) => `tel:+65${p}`;
+const waUrl = (p) => `https://wa.me/65${p}`;
 
 // ---------- tabs ----------
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
@@ -79,6 +85,7 @@ function openSettings() {
   });
   $('serviceInput').value = state.settings.serviceMin;
   $('navInput').value = state.settings.nav;
+  $('earlyInput').value = state.settings.earlyMeters;
   $('settingsDlg').showModal();
 }
 $('settingsBtn').onclick = openSettings;
@@ -119,6 +126,7 @@ $('saveSettings').addEventListener('click', async (e) => {
   }
   state.settings.serviceMin = Math.max(0, Number($('serviceInput').value) || 0);
   state.settings.nav = $('navInput').value;
+  state.settings.earlyMeters = Math.max(0, Math.round(Number($('earlyInput').value) || 0));
   save(); renderHub(); renderEndOptions(); $('settingsDlg').close();
 });
 
@@ -136,7 +144,10 @@ function setSlot(s, slot) {
 const slotButtons = (current, attr) => [['', 'Any'], ['am', SLOTS.am.label], ['pm', SLOTS.pm.label]]
   .map(([k, label]) => `<button class="chip ${current === k ? 'on' : ''}" ${attr}="${k}">${label}</button>`).join('');
 
-function renumber() { state.run.stops.forEach((s, i) => { s.sn = i + 1; }); }
+// S/N comes from the sheet when it can be read; otherwise rows are numbered on.
+const nextSn = () => Math.max(0, ...state.run.stops.map((s) => s.sn || 0), ...state.run.skipped.map((s) => s.sn || 0)) + 1;
+const sortStops = () => state.run.stops.sort((a, b) => (a.sn ?? 1e9) - (b.sn ?? 1e9));
+const openDetails = new Set(); // stops whose recipients panel is open (not saved)
 
 function renderStops() {
   const stops = state.run.stops;
@@ -154,6 +165,13 @@ function renderStops() {
   $('slotBar').hidden = !stops.length;
   $('slotBar').innerHTML = `<span>Set all to:</span>${slotButtons(null, 'data-all-slot')}`
     + `<span class="hint" style="margin:0">${counts.am} AM · ${counts.pm} PM · ${stops.length - counts.am - counts.pm} any</span>`;
+  const skipped = state.run.skipped;
+  $('skippedCard').hidden = !skipped.length;
+  $('skippedCard').innerHTML = skipped.length
+    ? `<div><b>Crossed out on the sheet, skipped:</b> ${skipped.map((k) => '#' + esc(k.sn)).join(', ')}</div>
+       <div class="skipped-list">${skipped.map((k) => `<span class="skipped-item">#${esc(k.sn)}${k.candidates?.[0] ? ' · ' + esc(k.candidates[0]) : ''}
+         <button class="btn small" data-addback="${k.id}">Add back</button></span>`).join('')}</div>`
+    : '';
   $('stopList').innerHTML = stops.map((s) => {
     const badge = {
       ok: '<span class="badge ok">✓ matches sheet</span>',
@@ -170,27 +188,66 @@ function renderStops() {
         <input class="unit" maxlength="10" value="${esc(s.unit || '')}" placeholder="Flr-Unit" aria-label="Floor and unit for #${s.sn}">
       </span>
       <span class="tools">
+        <button data-act="recips" class="${openDetails.has(s.id) ? 'on' : ''}" aria-label="Recipients" title="Recipients">👤${s.recipients?.length ? s.recipients.length : ''}</button>
         <button data-act="pri" class="${s.priority ? 'on' : ''}" aria-label="Priority" title="Priority">${s.priority ? '★' : '☆'}</button>
         <button data-act="del" aria-label="Remove" title="Remove">🗑</button>
       </span>
       <span class="addr">${placeLine(s.place, s.unit)} ${badge}${state.run.progress[s.id] === 'success' ? ' <span class="badge ok">· Delivered (S)</span>' : ''}${state.run.progress[s.id] === 'failed' ? ' <span class="badge bad">· Failed (F)</span>' : ''}</span>
       <span class="slots">${slotButtons(slotOf(s), 'data-slot')}</span>
+      ${openDetails.has(s.id) ? detailsPanel(s) : ''}
     </li>`;
   }).join('');
+}
+
+// Recipients (from RcptNames + RcptHPNo) and the attempt number (DT), editable.
+function detailsPanel(s) {
+  const rows = (s.recipients || []).map((r, k) => `
+    <div class="recip-edit" data-k="${k}">
+      <input class="r-name" value="${esc(r.name)}" placeholder="Name" aria-label="Recipient name">
+      <input class="r-phone ${r.phone && !r.sure ? 'unsure' : ''}" value="${esc(r.phone)}" inputmode="tel" placeholder="Phone" aria-label="Phone number">
+      <button class="r-del" data-act="r-del" aria-label="Remove recipient">✕</button>
+    </div>`).join('');
+  const unsure = (s.recipients || []).some((r) => r.phone && !r.sure);
+  return `<div class="details">
+    ${rows || '<div class="hint">No recipients read for this envelope.</div>'}
+    ${unsure ? '<div class="hint">⚠ Highlighted numbers were hard to read: check them against the sheet.</div>' : ''}
+    <button class="btn small" data-act="r-add">＋ Recipient</button>
+    ${s.dt ? `<div class="hint">Attempt: ${esc(s.dt)}</div>` : ''}
+  </div>`;
 }
 
 $('stopList').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if (!btn) return;
   const li = btn.closest('.stop'), s = state.run.stops.find((x) => x.id === li.dataset.id);
   if (btn.dataset.act === 'pri') s.priority = !s.priority;
+  if (btn.dataset.act === 'recips') { if (openDetails.has(s.id)) openDetails.delete(s.id); else openDetails.add(s.id); }
+  if (btn.dataset.act === 'r-add') (s.recipients ||= []).push({ name: '', phone: '', sure: true });
+  if (btn.dataset.act === 'r-del') s.recipients.splice(Number(btn.closest('.recip-edit').dataset.k), 1);
   if ('slot' in btn.dataset) setSlot(s, btn.dataset.slot);
-  if (btn.dataset.act === 'del') { state.run.stops = state.run.stops.filter((x) => x !== s); renumber(); }
+  if (btn.dataset.act === 'del') state.run.stops = state.run.stops.filter((x) => x !== s);
   save(); renderStops();
+});
+$('skippedCard').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-addback]'); if (!btn) return;
+  const k = state.run.skipped.find((x) => x.id === btn.dataset.addback);
+  state.run.skipped = state.run.skipped.filter((x) => x !== k);
+  const { candidates = [], ...rest } = k;
+  const stop = { ...rest, postcode: candidates[0] || '', place: null, status: 'missing', candidates };
+  if (candidates.length) {
+    // the row was crossed out, so its street text can't confirm the code: mark it to check
+    const r = await resolveRow({ candidates, rowText: '' });
+    Object.assign(stop, { postcode: r.postcode, place: r.place, status: r.status });
+  }
+  state.run.stops.push(stop); sortStops(); save(); renderStops();
 });
 $('stopList').addEventListener('change', async (e) => {
   const li = e.target.closest('.stop'); if (!li) return;
   const s = state.run.stops.find((x) => x.id === li.dataset.id);
-  if (e.target.classList.contains('unit')) {
+  if (e.target.classList.contains('r-name') || e.target.classList.contains('r-phone')) {
+    const r = s.recipients[Number(e.target.closest('.recip-edit').dataset.k)];
+    if (e.target.classList.contains('r-name')) r.name = e.target.value.trim().toUpperCase();
+    else { r.phone = phoneDigits(e.target.value); r.sure = true; e.target.value = r.phone; e.target.classList.remove('unsure'); }
+  } else if (e.target.classList.contains('unit')) {
     s.unit = normalizeUnit(e.target.value);
     e.target.value = s.unit;
   } else if (e.target.classList.contains('code')) {
@@ -214,8 +271,8 @@ $('slotBar').addEventListener('click', (e) => {
 });
 
 $('addManualBtn').onclick = () => {
-  state.run.stops.push({ id: uid(), postcode: '', place: null, status: 'missing', priority: false, from: '', to: '' });
-  renumber(); save(); renderStops();
+  state.run.stops.push({ id: uid(), sn: nextSn(), postcode: '', place: null, status: 'missing', priority: false, from: '', to: '', recipients: [] });
+  save(); renderStops();
   const inputs = document.querySelectorAll('.stop .code');
   inputs[inputs.length - 1]?.focus();
 };
@@ -228,17 +285,29 @@ async function handlePhotos(files) {
       const result = await readSheetPhoto(list[i], (msg) => toast(label + msg));
       if (result.error) { toast(label + result.error); continue; }
       toast(label + 'Checking addresses…');
-      const added = [];
+      const added = [], struck = [], have = new Set(state.run.stops.map((s) => s.sn).concat(state.run.skipped.map((s) => s.sn)));
+      let sn = nextSn(), dupes = 0;
+      const blank = () => ({ id: uid(), postcode: '', place: null, status: 'missing', priority: false, from: '', to: '', recipients: [], dt: null });
       for (const row of result.rows) {
-        for (let m = 0; m < row.missingBefore; m++) added.push({ id: uid(), postcode: '', place: null, status: 'missing', priority: false, from: '', to: '' });
+        for (let m = 0; m < (row.missingBefore || 0); m++) added.push({ ...blank(), sn: sn++ });
+        const rowSn = row.sn ?? sn;
+        sn = rowSn + 1;
+        if (row.sn != null && have.has(row.sn)) { dupes++; continue; } // this page was already scanned
+        const base = { ...blank(), sn: rowSn, recipients: row.recipients || [], dt: row.dt ?? null };
+        if (row.window) setSlot(base, row.window);
+        if (row.struck) { struck.push({ ...base, candidates: row.candidates }); continue; }
+        if (!row.candidates.length) { added.push(base); continue; }
         const r = await resolveRow(row).catch(() => ({ postcode: row.candidates[0] || '', place: null, status: 'unreadable' }));
-        // row text (names etc.) is used only for the check above and not kept
-        added.push({ id: uid(), postcode: r.postcode, place: r.place, status: r.status, unit: r.unit || '', candidates: row.candidates, priority: false, from: '', to: '' });
+        // row text is used only for the check above and not kept; FIN/RcptIDs are never read
+        added.push({ ...base, postcode: r.postcode, place: r.place, status: r.status, unit: r.unit || '', candidates: row.candidates });
       }
       state.run.stops.push(...added);
-      renumber(); save(); renderStops();
+      state.run.skipped.push(...struck);
+      sortStops(); save(); renderStops();
       const bad = added.filter((s) => s.status !== 'ok').length;
-      toast(`${label}Added ${added.length} rows.${bad ? ` ${bad} need a look (highlighted).` : ' All matched the sheet.'} Compare the count with your sheet.`);
+      toast(`${label}Added ${added.length} rows.${bad ? ` ${bad} need a look (highlighted).` : ' All matched the sheet.'}`
+        + (struck.length ? ` Skipped ${struck.length} crossed-out (${struck.map((k) => '#' + k.sn).join(', ')}).` : '')
+        + (dupes ? ` ${dupes} already added earlier (not doubled).` : '') + ' Compare the count with your sheet.');
     } catch (err) {
       console.error(err);
       toast(`${label}Could not read this photo (${err.message}). Try again, or type the postal codes.`);
@@ -295,8 +364,13 @@ $('optimiseBtn').onclick = async () => {
   if (!usable.length) { toast(state.run.stops.length ? 'Every envelope is already marked success or failed.' : 'Add some stops first.'); return; }
   const unresolved = state.run.stops.length - usable.length;
   if (unresolved && !confirm(`${unresolved} row(s) have no valid postal code and will be left out. Continue?`)) return;
+  // same stops as the route on screen and nothing delivered yet: only switch if genuinely faster
+  const prev = state.run.plan;
+  const untouched = prev && !prev.visits.some((v) => visitState(v));
+  const currentOrder = untouched ? prev.visits.map((v) => v.postcode) : null;
   try {
-    await optimise({ start: state.settings.hub.place, end: endChoice(), stops: usable, departureSec: toSec($('departInput').value) ?? nowSec() });
+    const plan = await optimise({ start: state.settings.hub.place, end: endChoice(), stops: usable, departureSec: toSec($('departInput').value) ?? nowSec(), currentOrder });
+    routeMsg(comparisonMessage(plan.comparison));
   } catch { return; /* message already shown */ }
   for (const id of Object.keys(state.run.progress)) if (state.run.progress[id] === 'skipped') delete state.run.progress[id];
   save(); showTab('route');
@@ -304,10 +378,19 @@ $('optimiseBtn').onclick = async () => {
 
 const nowSec = () => { const d = new Date(); return d.getHours() * 3600 + d.getMinutes() * 60; };
 
-async function optimise({ start, end, stops, departureSec }) {
+function comparisonMessage(c) {
+  if (!c) return '';
+  if (!c.switched) return 'Kept your current order: no genuinely faster route found.';
+  const mins = Math.round(c.savedSec / 60);
+  if (mins >= 1) return `Switched to a faster order: saves about ${mins} min.`;
+  if (c.lateFixed > 0) return `Switched to a better order: ${c.lateFixed} fewer late stop${c.lateFixed > 1 ? 's' : ''}.`;
+  return 'Switched to a better order for time windows and priority stops.';
+}
+
+async function optimise({ start, end, stops, departureSec, currentOrder = null }) {
   const btn = $('optimiseBtn'); btn.disabled = true; btn.textContent = 'Optimising…';
   try {
-    const plan = await buildPlan({ start, end, stops, departureSec, serviceMin: state.settings.serviceMin });
+    const plan = await buildPlan({ start, end, stops, departureSec, serviceMin: state.settings.serviceMin, earlyMeters: state.settings.earlyMeters, currentOrder });
     state.run.plan = slimPlan(plan);
     return state.run.plan;
   } catch (err) {
@@ -320,7 +403,7 @@ function slimPlan(plan) {
   return {
     ...plan,
     visits: plan.visits.map((v) => ({
-      postcode: v.postcode, place: v.place, seq: v.seq, arrive: v.arrive, start: v.start, wait: v.wait, late: v.late,
+      postcode: v.postcode, place: v.place, seq: v.seq, arrive: v.arrive, start: v.start, wait: v.wait, late: v.late, early: v.early, node: v.node,
       window: v.window, priority: v.priority, envelopes: v.envelopes.map((e) => e.sn), units: v.envelopes.map((e) => e.unit || ''),
       stopIds: v.envelopes.map((e) => e.id),
     })),
@@ -386,13 +469,22 @@ function renderRoute() {
         <span class="env"><span class="env-sn">#${v.envelopes[k]}${units[k] && !oneUnit ? ` <span class="unit-tag">${esc(units[k])}</span>` : ''}</span>
           <button class="chip ok ${prog[id] === 'success' ? 'on' : ''}" data-env="${id}" data-set="success" aria-label="Envelope ${v.envelopes[k]} success">✓</button>
           <button class="chip bad ${prog[id] === 'failed' ? 'on' : ''}" data-env="${id}" data-set="failed" aria-label="Envelope ${v.envelopes[k]} failed">✗</button></span>`).join('')}</div>` : '';
+    const movable = editMode && v.node != null && !vs;
+    const recips = v.stopIds.flatMap((id, k) => (state.run.stops.find((s) => s.id === id)?.recipients || [])
+      .map((r) => ({ ...r, sn: v.envelopes[k] }))).filter((r) => r.name || r.phone);
+    const recipList = recips.length ? `<div class="recips">${recips.map((r) => `<div class="recip">
+        <span class="r-who">${multi ? `#${esc(r.sn)} ` : ''}${esc(r.name || 'Recipient')}${r.phone && !r.sure ? ' <span class="badge check">check number</span>' : ''}</span>
+        ${r.phone ? `<a class="btn small" href="${telUrl(r.phone)}">📞 Call</a><a class="btn small" href="${waUrl(r.phone)}" target="_blank" rel="noopener">WhatsApp</a>` : ''}
+      </div>`).join('')}</div>` : '';
     return `<li class="visit ${vs} ${v.postcode === nextPc ? 'next' : ''}" data-pc="${v.postcode}">
       <span class="seq">${v.seq}</span>
       <div>
+        ${movable ? `<span class="move"><button class="btn small" data-move="up" aria-label="Move up">▲</button><button class="btn small" data-move="down" aria-label="Move down">▼</button></span>` : ''}
         <div><span class="eta">${toHHMM(v.start)}</span> ${placeLine(v.place, oneUnit)}</div>
         <div class="meta">${v.postcode} · envelope${v.envelopes.length > 1 ? 's' : ''} ${v.envelopes.map((n) => '#' + n).join(' ')}${v.priority ? ' · ★ priority' : ''}${v.window ? ` · window ${toHHMM(v.window.start)}–${toHHMM(v.window.end)}` : ''}</div>
         ${v.late > 59 ? `<div class="late">About ${Math.round(v.late / 60)} min late for its window</div>` : ''}
         ${v.wait > 59 ? `<div class="wait">Arrive ${toHHMM(v.arrive)}, wait ${Math.round(v.wait / 60)} min for window</div>` : ''}
+        ${v.early ? '<div class="meta">PM stop delivered early: close to a stop being delivered on time</div>' : ''}
       </div>
       <div class="row-btns">
         <a class="btn small primary" href="${navUrl(v.place, state.settings.nav)}" target="_blank" rel="noopener">Navigate</a>
@@ -400,6 +492,7 @@ function renderRoute() {
         <button class="btn small ${all('skipped') ? 'on' : ''}" data-act="skipped">${all('skipped') ? 'Unskip' : 'Skip'}</button>
       </div>
       ${perEnvelope}
+      ${recipList}
     </li>`;
   }).join('') + (plan.end ? `<li class="visit end-row">
       <span class="seq">🏁</span>
@@ -412,6 +505,7 @@ function renderRoute() {
 
 $('visitList').addEventListener('click', (e) => {
   const btn = e.target.closest('button'); if (!btn) return;
+  if (btn.dataset.move) { moveVisit(btn.closest('.visit').dataset.pc, btn.dataset.move === 'up' ? -1 : 1); return; }
   const prog = state.run.progress;
   const toggle = (id, want) => { if (prog[id] === want) delete prog[id]; else prog[id] = want; };
   if (btn.dataset.env) {
@@ -474,14 +568,46 @@ $('reoptBtn').onclick = async () => {
   } catch { /* no GPS permission or no fix: start from the last finished stop */ }
   const btn = $('reoptBtn'); btn.disabled = true; btn.textContent = 'Re-optimising…';
   try {
-    const fresh = await optimise({ start, end: endChoice(), stops, departureSec: nowSec() });
-    fresh.visits = [...doneVisits, ...fresh.visits.map((v, i) => ({ ...v, seq: doneVisits.length + i + 1 }))];
+    const fresh = await optimise({ start, end: endChoice(), stops, departureSec: nowSec(), currentOrder: todo.map((v) => v.postcode) });
+    routeMsg(comparisonMessage(fresh.comparison));
+    // finished stops stay on top, locked (they belong to the earlier plan)
+    fresh.visits = [...doneVisits.map((v) => ({ ...v, node: null })), ...fresh.visits.map((v, i) => ({ ...v, seq: doneVisits.length + i + 1 }))];
     fresh.start = plan.start;
     fresh.departure = plan.departure;
     delete fresh.geometry;
     state.run.plan = fresh; save(); renderRoute();
   } catch { /* message already shown */ } finally { btn.disabled = false; btn.textContent = '↻ Re-optimise remaining stops from here'; }
 };
+
+// ---------- manual reorder ----------
+let editMode = false;
+$('editOrderBtn').onclick = () => {
+  editMode = !editMode;
+  $('editOrderBtn').textContent = editMode ? '✓ Done editing' : '✎ Edit order';
+  $('editOrderBtn').classList.toggle('primary', editMode);
+  renderRoute();
+};
+// Move a stop up/down among the not-yet-delivered stops; ETAs update straight away.
+function moveVisit(pc, dir) {
+  const plan = state.run.plan, list = plan.visits;
+  const i = list.findIndex((v) => v.postcode === pc);
+  let j = i + dir;
+  while (j >= 0 && j < list.length && (list[j].node == null || visitState(list[j]))) j += dir;
+  if (j < 0 || j >= list.length) return;
+  [list[i], list[j]] = [list[j], list[i]];
+  retimePlan(plan);
+  routeMsg('Order changed by hand. Re-optimise will only replace it if a route is genuinely faster.');
+  save(); renderRoute();
+}
+function retimePlan(plan) {
+  const mine = plan.visits.filter((v) => v.node != null);
+  const t = retime(plan.model, mine.map((v) => v.node));
+  t.times.forEach((x, k) => Object.assign(mine[k], { arrive: x.arrive, start: x.start, wait: x.wait, late: x.late, early: x.early }));
+  plan.visits.forEach((v, k) => { v.seq = k + 1; });
+  plan.finish = t.finish; plan.lateCount = t.lateCount; plan.distance = t.distance;
+  if (plan.end) plan.end.arrive = t.endArrive;
+  delete plan.geometry;
+}
 
 $('routeEndInput').addEventListener('change', (e) => {
   state.run.end = e.target.value; save(); renderEndOptions();
